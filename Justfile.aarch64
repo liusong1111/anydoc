@@ -1,0 +1,65 @@
+# any2md aarch64 构建 / 镜像配方（与 Justfile 同构，产物隔离在 dist-aarch64/）
+#
+#   just -f Justfile.aarch64 build         # aarch64 musl 静态 release → dist-aarch64/any2md/
+#   just -f Justfile.aarch64 docker-build  # buildx --platform linux/arm64 打镜像
+#   just -f Justfile.aarch64 docker-push
+#
+# 依赖：rustup target add aarch64-unknown-linux-musl，以及 musl.cc 的
+# aarch64 C++ 交叉工具链：
+#   curl -L https://musl.cc/aarch64-linux-musl-cross.tgz | tar xz -C ~/.local/share/
+
+set shell := ["bash", "-uc"]
+
+musl_target := "aarch64-unknown-linux-musl"
+musl_toolchain := home_directory() / ".local/share/aarch64-linux-musl-cross"
+out := "dist-aarch64"
+
+time_tag := `date +"%Y-%m-%d-%H-%M"`
+git_tag := `git describe --always --dirty=-modified`
+git_branch := `git rev-parse --abbrev-ref HEAD`
+# 分支名可能含 /（如 feature/xxx），docker tag 不允许
+git_branch_tag := replace(git_branch, "/", "-")
+image_tag := time_tag + "-" + git_branch_tag + "-" + git_tag + "-aarch64"
+image_name := "registry.cn-shanghai.aliyuncs.com/maim1/any2md"
+inner_image_name := "registry-vpc.cn-shanghai.aliyuncs.com/maim1/any2md"
+
+default: build
+
+# 构建 aarch64 musl 静态 release 二进制，连同模型组装到 dist-aarch64/any2md/
+# RUSTFLAGS 说明见 Justfile 的 build 配方，两套完全一致（-L 目录各自隔离）
+build:
+    mkdir -p target/musl-static-aarch64
+    ln -sf "{{musl_toolchain}}/aarch64-linux-musl/lib/libstdc++.a" target/musl-static-aarch64/libstdc++.a
+    export PATH="{{musl_toolchain}}/bin:$PATH" && \
+    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-g++ && \
+    export CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc && \
+    export CXX_aarch64_unknown_linux_musl=aarch64-linux-musl-g++ && \
+    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C link-arg=-L{{justfile_directory()}}/target/musl-static-aarch64 -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc -C link-arg=-Wl,--start-group -C link-arg=-lmusl_fortify_shim -C link-arg=-lc -C link-arg=-lgcc -C link-arg=-lgcc_eh -C link-arg=-Wl,--end-group" && \
+    cargo build --release --target {{musl_target}} --bin any2md
+    mkdir -p {{out}}/any2md
+    cp target/{{musl_target}}/release/any2md {{out}}/any2md/
+    rm -rf {{out}}/any2md/models
+    cp -r models {{out}}/any2md/
+    cp scripts/download-models.sh {{out}}/any2md/
+    @echo "✔ 已产出 aarch64 静态二进制（file 应为 statically linked, ARM aarch64）："
+    @file {{out}}/any2md/any2md
+    @ls -lh {{out}}/any2md/
+
+# 打 arm64 镜像（buildx；首次需 docker run --rm --privileged docker/binfmt 注册 qemu，
+# 或 docker buildx create --platform linux/arm64 --use）
+docker-build: build
+    set -e
+    docker buildx build --platform linux/arm64 -t {{ image_name }}:{{ image_tag }} -f Dockerfile.aarch64 --load .
+    docker tag {{ image_name }}:{{ image_tag }} {{ image_name }}:latest-aarch64
+    @echo {{ image_name }}:{{ image_tag }}
+
+# 推镜像（tag + latest-aarch64）
+docker-push: docker-build
+    docker push {{ image_name }}:{{ image_tag }}
+    docker push {{ image_name }}:latest-aarch64
+    @echo {{ image_name }}:{{ image_tag }}
+
+# 部署到 aijoy3-dev（arm64 节点池时）
+deploy-dev: docker-push
+    kubectl set image deployment/any2md any2md={{ inner_image_name }}:{{ image_tag }} -n aijoy3-dev
+    kubectl get pod -n aijoy3-dev | grep any2md

@@ -248,6 +248,10 @@ mod tests {
     fn non_images_are_not_scans() {
         let mut not_an_image = asset(1240, 1754);
         not_an_image.media_type = "application/octet-stream".to_string();
-        assert!(!is_document_scan(&not_an_image, &BlockContext::default(), OcrStrategy::Aggressive));
+        assert!(!is_document_scan(
+            &not_an_image,
+            &BlockContext::default(),
+            OcrStrategy::Aggressive
+        ));
     }
 }

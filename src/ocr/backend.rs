@@ -17,10 +17,7 @@ pub trait OcrBackend: Send + Sync {
         images: &[&[u8]],
         options: &OcrOptions,
     ) -> Result<Vec<OcrResult>, OcrError> {
-        images
-            .iter()
-            .map(|image| self.recognize(image, options))
-            .collect()
+        images.iter().map(|image| self.recognize(image, options)).collect()
     }
 
     /// Verify the backend is ready (model loaded, service reachable).
@@ -42,11 +39,7 @@ pub struct OcrOptions {
 
 impl Default for OcrOptions {
     fn default() -> Self {
-        Self {
-            language: "zh".to_string(),
-            detect_orientation: true,
-            max_size: Some((4096, 4096)),
-        }
+        Self { language: "zh".to_string(), detect_orientation: true, max_size: Some((4096, 4096)) }
     }
 }
 

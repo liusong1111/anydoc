@@ -1,19 +1,12 @@
-//! Embedded OCR backend: PP-OCRv5-FP16 via [rust-paddle-ocr] (MNN
-//! inference), running in-process on CPU.
+//! Embedded OCR backend: PP-OCRv5-FP16 via [ocr-rs] (rust-paddle-ocr),
+//! MNN inference, in-process on CPU. The engine is `Send + Sync` and its
+//! entry points take `&self`, so the backend is a plain wrapper.
 //!
-//! `Det`/`Rec` hold raw MNN pointers and are neither `Send` nor `Sync`, so
-//! — the same pattern the crate's own `OcrEngine` uses — the models live on
-//! a dedicated worker thread and calls go over a channel. We run our own
-//! worker rather than wrapping `OcrEngine` because the engine's public API
-//! returns plain strings without per-region confidence or boxes.
-//!
-//! [rust-paddle-ocr]: https://github.com/zibo-chen/rust-paddle-ocr
+//! [ocr-rs]: https://github.com/zibo-chen/rust-paddle-ocr
 
 use std::path::Path;
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::thread::JoinHandle;
 
-use rust_paddle_ocr::{Det, Rec};
+use ocr_rs::{OcrEngine, OcrEngineConfig};
 
 use super::backend::{BoundingBox, OcrBackend, OcrError, OcrOptions, OcrResult};
 
@@ -28,28 +21,29 @@ pub const KEYS_FILE: &str = "ppocr_keys_v5.txt";
 /// as belonging to the same line when sorting into reading order.
 const LINE_TOLERANCE_PX: i32 = 20;
 
-/// In-process OCR backend; see the module docs for the threading model.
+/// In-process OCR backend wrapping `ocr_rs::OcrEngine`.
 pub struct EmbeddedOcrBackend {
-    // `Option` so `Drop` can disconnect the channel before joining.
-    request_tx: Option<Sender<OcrRequest>>,
-    worker: Option<JoinHandle<()>>,
-}
-
-enum OcrRequest {
-    Recognize {
-        image: image::DynamicImage,
-        respond: Sender<Result<OcrResult, OcrError>>,
-    },
+    engine: OcrEngine,
 }
 
 impl EmbeddedOcrBackend {
-    /// Load the default PP-OCRv5-FP16 model set from a directory.
+    /// Load the default PP-OCRv5-FP16 model set from a directory, with the
+    /// engine's default thread count.
     pub fn from_model_dir(dir: impl AsRef<Path>) -> Result<Self, OcrError> {
+        Self::from_model_dir_with_threads(dir, None)
+    }
+
+    /// Load from a directory, overriding the engine's inference thread count.
+    pub fn from_model_dir_with_threads(
+        dir: impl AsRef<Path>,
+        threads: Option<u32>,
+    ) -> Result<Self, OcrError> {
         let dir = dir.as_ref();
         Self::from_files(
             dir.join(DET_MODEL_FILE),
             dir.join(REC_MODEL_FILE),
             dir.join(KEYS_FILE),
+            threads,
         )
     }
 
@@ -58,72 +52,55 @@ impl EmbeddedOcrBackend {
         det_model: impl AsRef<Path>,
         rec_model: impl AsRef<Path>,
         keys: impl AsRef<Path>,
+        threads: Option<u32>,
     ) -> Result<Self, OcrError> {
-        let det_model = det_model.as_ref().to_path_buf();
-        let rec_model = rec_model.as_ref().to_path_buf();
-        let keys = keys.as_ref().to_path_buf();
-
-        let (request_tx, request_rx) = channel::<OcrRequest>();
-        let (init_tx, init_rx) = channel::<Result<(), OcrError>>();
-
-        let worker = std::thread::spawn(move || {
-            // rect_border_size 12 / no box merging: the combination upstream
-            // recommends for PP-OCRv5.
-            let models = Det::from_file(&det_model)
-                .map(|det| det.with_rect_border_size(12).with_merge_boxes(false).with_merge_threshold(1))
-                .and_then(|det| Rec::from_file(&rec_model, &keys).map(|rec| (det, rec)));
-            match models {
-                Ok((det, rec)) => {
-                    let _ = init_tx.send(Ok(()));
-                    run_worker(det, rec, request_rx);
-                }
-                Err(e) => {
-                    let _ = init_tx.send(Err(OcrError::InitFailed(e.to_string())));
-                }
-            }
-        });
-
-        match init_rx.recv() {
-            Ok(Ok(())) => Ok(Self { request_tx: Some(request_tx), worker: Some(worker) }),
-            Ok(Err(e)) => {
-                let _ = worker.join();
-                Err(e)
-            }
-            Err(_) => {
-                let _ = worker.join();
-                Err(OcrError::InitFailed("OCR worker thread died during init".into()))
-            }
-        }
-    }
-}
-
-impl Drop for EmbeddedOcrBackend {
-    fn drop(&mut self) {
-        // Disconnecting the channel ends the worker's receive loop.
-        drop(self.request_tx.take());
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        let config = threads.map(|n| OcrEngineConfig::new().with_threads(n as i32));
+        let engine = OcrEngine::new(det_model.as_ref(), rec_model.as_ref(), keys.as_ref(), config)
+            .map_err(|e| OcrError::InitFailed(e.to_string()))?;
+        Ok(Self { engine })
     }
 }
 
 impl OcrBackend for EmbeddedOcrBackend {
     fn recognize(&self, image: &[u8], options: &OcrOptions) -> Result<OcrResult, OcrError> {
-        let img = image::load_from_memory(image)
-            .map_err(|e| OcrError::InvalidImage(e.to_string()))?;
+        let img =
+            image::load_from_memory(image).map_err(|e| OcrError::InvalidImage(e.to_string()))?;
         let img = downscale_to(img, options.max_size);
 
-        let (respond, result_rx) = channel();
-        let request_tx = self
-            .request_tx
-            .as_ref()
-            .ok_or_else(|| OcrError::RecognitionFailed("OCR worker thread has terminated".into()))?;
-        request_tx
-            .send(OcrRequest::Recognize { image: img, respond })
-            .map_err(|_| OcrError::RecognitionFailed("OCR worker thread has terminated".into()))?;
-        result_rx
-            .recv()
-            .map_err(|_| OcrError::RecognitionFailed("OCR worker thread has terminated".into()))?
+        let mut results =
+            self.engine.recognize(&img).map_err(|e| OcrError::RecognitionFailed(e.to_string()))?;
+
+        // Reading order: top to bottom; boxes on the same line left to right.
+        results.sort_by(|a, b| {
+            let (ra, rb) = (&a.bbox.rect, &b.bbox.rect);
+            if (ra.top() - rb.top()).abs() < LINE_TOLERANCE_PX {
+                ra.left().cmp(&rb.left())
+            } else {
+                ra.top().cmp(&rb.top())
+            }
+        });
+
+        let boxes: Vec<BoundingBox> = results
+            .into_iter()
+            .filter(|r| !r.text.trim().is_empty())
+            .map(|r| BoundingBox {
+                x: r.bbox.rect.left() as f32,
+                y: r.bbox.rect.top() as f32,
+                width: r.bbox.rect.width() as f32,
+                height: r.bbox.rect.height() as f32,
+                text: r.text,
+                confidence: r.confidence,
+            })
+            .collect();
+
+        let text = boxes.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join("\n");
+        let confidence = if boxes.is_empty() {
+            0.0
+        } else {
+            boxes.iter().map(|b| b.confidence).sum::<f32>() / boxes.len() as f32
+        };
+
+        Ok(OcrResult { text, confidence, boxes })
     }
 
     fn health_check(&self) -> Result<(), OcrError> {
@@ -132,63 +109,8 @@ impl OcrBackend for EmbeddedOcrBackend {
     }
 }
 
-fn run_worker(mut det: Det, mut rec: Rec, request_rx: Receiver<OcrRequest>) {
-    while let Ok(OcrRequest::Recognize { image, respond }) = request_rx.recv() {
-        let _ = respond.send(recognize_on_worker(&mut det, &mut rec, &image));
-    }
-}
-
-fn recognize_on_worker(
-    det: &mut Det,
-    rec: &mut Rec,
-    img: &image::DynamicImage,
-) -> Result<OcrResult, OcrError> {
-    let mut rects = det
-        .find_text_rect(img)
-        .map_err(|e| OcrError::RecognitionFailed(e.to_string()))?;
-    // Reading order: top to bottom; boxes on the same line left to right.
-    rects.sort_by(|a, b| {
-        if (a.top() - b.top()).abs() < LINE_TOLERANCE_PX {
-            a.left().cmp(&b.left())
-        } else {
-            a.top().cmp(&b.top())
-        }
-    });
-
-    let mut boxes = Vec::with_capacity(rects.len());
-    for rect in rects {
-        let cropped = crop_clamped(img, rect.left(), rect.top(), rect.width(), rect.height());
-        let (text, confidence) = rec
-            .predict_with_confidence(&cropped)
-            .map_err(|e| OcrError::RecognitionFailed(e.to_string()))?;
-        if text.trim().is_empty() {
-            continue;
-        }
-        boxes.push(BoundingBox {
-            x: rect.left() as f32,
-            y: rect.top() as f32,
-            width: rect.width() as f32,
-            height: rect.height() as f32,
-            text,
-            confidence,
-        });
-    }
-
-    let text = boxes.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join("\n");
-    let confidence = if boxes.is_empty() {
-        0.0
-    } else {
-        boxes.iter().map(|b| b.confidence).sum::<f32>() / boxes.len() as f32
-    };
-
-    Ok(OcrResult { text, confidence, boxes })
-}
-
 /// Downscale proportionally when either dimension exceeds `max_size`.
-fn downscale_to(
-    img: image::DynamicImage,
-    max_size: Option<(u32, u32)>,
-) -> image::DynamicImage {
+fn downscale_to(img: image::DynamicImage, max_size: Option<(u32, u32)>) -> image::DynamicImage {
     let Some((max_w, max_h)) = max_size else { return img };
     if img.width() <= max_w && img.height() <= max_h {
         return img;
@@ -199,20 +121,4 @@ fn downscale_to(
         (img.height() as f32 * scale) as u32,
         image::imageops::FilterType::Lanczos3,
     )
-}
-
-/// Crop with coordinates clamped to the image bounds; detection boxes may
-/// overshoot by a pixel or two.
-fn crop_clamped(
-    img: &image::DynamicImage,
-    left: i32,
-    top: i32,
-    width: u32,
-    height: u32,
-) -> image::DynamicImage {
-    let x = left.max(0) as u32;
-    let y = top.max(0) as u32;
-    let w = width.min(img.width().saturating_sub(x)).max(1);
-    let h = height.min(img.height().saturating_sub(y)).max(1);
-    img.crop_imm(x, y, w, h)
 }

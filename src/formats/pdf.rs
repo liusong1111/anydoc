@@ -167,11 +167,7 @@ impl PdfRenderer {
             .recognize(&png, options)
             .map_err(|e| ConvertError::Unsupported(format!("OCR failed: {e}")))?;
         if result.confidence < 0.8 {
-            log::warn!(
-                "low OCR confidence on page {}: {:.2}",
-                page_index + 1,
-                result.confidence
-            );
+            log::warn!("low OCR confidence on page {}: {:.2}", page_index + 1, result.confidence);
         }
         Ok(result.text)
     }

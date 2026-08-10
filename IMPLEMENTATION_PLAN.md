@@ -1,107 +1,81 @@
 # any2md 实施计划
 
 > 执行中的任务清单。设计依据见 [DESIGN.md](DESIGN.md)。
+> 状态：Phase 0–3 已完成并验证（2026-08-10），剩 Phase 4 收尾。
 
 ## 已确认的决策
 
 1. **项目名** `any2md`；库 crate 名沿用 `anydoc`（减少上游合并摩擦），CLI 二进制名 `any2md`
-2. **代码直接在仓库根**（本仓库即 fork），不嵌套 `forked-anydoc/` 子目录
+2. **代码直接在仓库根**（本仓库即 fork），不嵌套子目录；`upstream` remote 指向 firecrawl/anydoc
 3. **第一版不做**独立 OCR 服务、Docker 镜像、GPU 支持（见 DESIGN.md §7）
 4. **GitHub fork 暂缓**：本地 `feature/ocr-integration` 分支开发，需要发布时再建远程 fork
-5. **OCR 方案**：嵌入式 ocr-rs + PP-OCRv5-FP16（最终决策，取代早期的独立服务方案）
+5. **OCR 方案**：嵌入式 `ocr-rs = "2.4"`（crates.io，即 rust-paddle-ocr 的发布名）+ PP-OCRv5-FP16。
+   早期设想的 git main 分支依赖已否决：1.4.x 在 Linux x86_64 存在 MNN 张量拷贝 bug，且 `Det`/`Rec` 非 Send
+6. **PDF 页渲染用 hayro**（纯 Rust）；pdfium-render 需要外挂 libpdfium 二进制，否决
+7. **模型不经 build.rs 下载**（库构建不应依赖网络），改为 `scripts/download-models.sh`
 
 ---
 
-## Phase 0: 仓库准备 ✅（已完成）
+## Phase 0: 仓库准备 ✅
 
-- [x] 获取 anydoc v0.1.7 源码（含上游 git 历史），置于仓库根
-- [x] remote 整理：`origin` 改为 `upstream` 指向 firecrawl/anydoc
-- [x] `.gitignore` 增加 `/models/`、`.claude/`、`references/`
-- [x] 基线验证：`cargo build` + `cargo test` 全绿（8 passed）
-- [ ] 创建开发分支 `feature/ocr-integration` 并提交文档
+- [x] anydoc v0.1.7 源码（含上游 git 历史）置于仓库根
+- [x] remote 整理：`upstream` 指向 firecrawl/anydoc
+- [x] `.gitignore` 增加 `models/*.mnn`、`models/*.txt`、`/references/`、`/.claude/`
+- [x] 基线验证：`cargo build` + `cargo test` 全绿
+- [x] 开发分支 `feature/ocr-integration`，文档已提交
 
-## Phase 1: OCR 核心（3 天）
+## Phase 1: OCR 核心 ✅
 
-### 1.1 OCR 抽象层 — `src/ocr/backend.rs`（新增）
+- [x] `src/ocr/backend.rs`：`OcrBackend` trait / `OcrOptions` / `OcrResult` / `BoundingBox` / `OcrError`
+- [x] `src/ocr/embedded.rs`：`EmbeddedOcrBackend`（直接包装 `ocr_rs::OcrEngine`，Send+Sync）；
+      阅读顺序排序（同行容差 20px）、平均置信度、超限图片自动缩放
+- [x] `models/` 三件套就位（PP-OCRv5 FP16 det/rec + keys，共 ~11MB）
+- [x] `src/formats/pdf.rs`：`to_markdown_with_ocr()`，hayro 渲染（3×，≈216 DPI），
+      逐页按序拼接；快速路径与上游行为一致
+- [x] `src/lib.rs`：`pub mod ocr` + `to_markdown_with_ocr()` / `to_markdown_bytes_with_ocr()`
 
-- [ ] `OcrBackend` trait / `OcrOptions` / `OcrResult` / `BoundingBox` / `OcrError`
-- [ ] `src/ocr/mod.rs` 模块导出；`src/lib.rs` 加 `pub mod ocr`
+## Phase 2: CLI + 模型管理 + 集成测试 ✅
 
-**验收**：`cargo check` 通过，trait 定义与 DESIGN.md §5.1 一致
+- [x] `src/bin/any2md.rs`：`--ocr` / `--ocr-strategy` / `--ocr-models` / `--ocr-threads` / `--detect` / `-v`
+- [x] `scripts/download-models.sh` + `models/README.md`
+- [x] `scripts/make-ocr-fixtures.py` 生成测试夹具（`tests/fixtures-ocr/`，
+      有意避开上游 snapshots/robustness 扫描的 `tests/fixtures/`）
+- [x] `tests/integration_ocr.rs`：6 个端到端测试全过（模型缺失时自动跳过 OCR 用例）：
+      纯文本 PDF 快速路径 / 扫描 PDF 无 OCR 报错 / 扫描 PDF OCR / 混合 PDF 页序 /
+      DOCX 扫描图 OCR 进 alt / Disabled 策略不 OCR
+- [x] 已知限制记录：MNN 初始化向 stdout 打印 CPU 拓扑（库层面无法关闭）
 
-### 1.2 嵌入式后端 — `src/ocr/embedded.rs`（新增）
+## Phase 3: Office 格式 OCR ✅
 
-- [ ] `Cargo.toml` 加依赖：`ocr-rs`（git）、`image`、`rayon`、`sha2`、`num_cpus`
-- [ ] **先验证 ocr-rs 可编译可用**（风险最高的依赖，失败了立即切备用方案）
-- [ ] `EmbeddedOcrBackend`：`from_model_dir()`、阅读顺序排序、置信度聚合、`Arc` 共享
-- [ ] 单元测试（中文/英文 fixture）
+- [x] `src/ocr/strategy.rs`：`OcrStrategy` / `BlockContext` / `is_document_scan()`
+      （纸张比例 0.68–0.80、长边 ≥1200/1500、表格与 inline 排除）+ 5 个单元测试
+- [x] `apply_to_document()` 递归遍历（段落/标题/列表/表格/引用/批注），
+      OCR 结果写入图片 alt，原图保留在 assets，单图失败 warn 降级
+- [x] 端到端验证：`scan_image.docx --ocr` 输出 OCR 文本；不加 `--ocr` 不输出
 
-**验收**：加载 PP-OCRv5-FP16，识别测试图返回文本，测试通过
+## Phase 4: 优化与收尾（进行中）
 
-### 1.3 模型管理 — `build.rs` + `models/`
-
-- [ ] build.rs 自动下载缺失模型（det / rec / keys 三件套）
-- [ ] `models/README.md` 说明来源与手动下载方式
-
-### 1.4 PDF 集成 — `src/formats/pdf.rs`
-
-- [ ] 保留原 `to_markdown()`；新增 `to_markdown_with_ocr()`
-- [ ] 选定并实现 PDF 页渲染（pdfium-render 或 pdf_oxide，先试编译再定）
-- [ ] `src/lib.rs` 新增 `to_markdown_with_ocr()` / `to_markdown_bytes_with_ocr()`
-
-**验收**：纯文本 PDF 走快速路径；扫描 PDF OCR 出文本；混合 PDF 正确合并；未开 OCR 时行为与上游一致
-
-## Phase 2: CLI（1 天）
-
-- [ ] `src/bin/any2md.rs`：`--ocr` / `--ocr-strategy` / `--ocr-models` / `--ocr-threads` / `--detect` / `-v`
-- [ ] `tests/integration_ocr.rs`：纯文本/扫描/混合 PDF 端到端
-- [ ] 手动验证：
-  ```bash
-  cargo run --bin any2md -- test.pdf            # 无 OCR 快速路径
-  cargo run --bin any2md -- scan.pdf --ocr      # OCR 路径
-  ```
-
-## Phase 3: Office 格式 OCR（2 天）
-
-- [ ] `src/ocr/strategy.rs`：`OcrStrategy` / `BlockContext` / `is_document_scan()`（含 PNG/JPEG 尺寸解析）
-- [ ] `src/lib.rs` Office 分支：扫描图筛选 → 批量 OCR → 替换为文本段落（原图保留在 assets）
-- [ ] 单元测试：启发式各分支；集成测试：含扫描图的 DOCX
-
-**验收**：`any2md mixed.docx --ocr` 只 OCR 扫描图，正常插图不动
-
-## Phase 4: 优化与收尾（1 天）
-
-- [ ] `recognize_batch` rayon 并行
-- [ ] `benches/ocr_performance.rs`；hyperfine 验证性能目标（DESIGN.md §8）
-- [ ] README/DESIGN 核对：文档描述与实际行为一致
-- [ ] clippy / rustfmt 通过
+- [ ] release 构建 + 性能实测（对照 DESIGN.md §8 目标）
+- [ ] 文档最终核对：README/DESIGN 与实际行为一致
+- [ ] `cargo clippy --all-targets` / `cargo fmt --check` 通过
+- [ ] （可选）`benches/ocr_performance.rs`
+- [ ] （可选）`recognize_batch` 并行化：当前引擎内部已多线程，优先级低
 
 ---
 
-## 依赖清单
+## 依赖清单（实际）
 
 ```toml
 [dependencies]
-ocr-rs = { git = "https://github.com/zibo-chen/rust-paddle-ocr.git" }
-image = "0.25"
-rayon = "1.10"
-sha2 = "0.11"
-num_cpus = "1"
-# PDF 页渲染：pdfium-render 或 pdf_oxide（Phase 1.4 定）
-# CLI: clap、env_logger
-
-[dev-dependencies]
-criterion = "0.5"
+ocr-rs = "2.4"          # PP-OCRv5 + MNN（vendored，预编译库自动下载）
+image = "0.25"          # 图片解码/尺寸/缩放
+hayro = "0.7"           # PDF 页渲染（纯 Rust）
+clap = { version = "4.5", features = ["derive"] }   # CLI
+env_logger = "0.11"     # CLI 日志
 ```
-
-## 测试数据
-
-需准备：纯文本 PDF、扫描 PDF、混合 PDF 各 3 份左右；含扫描图的 DOCX 2 份；中/英文文字图片 fixture 各 1 张。来源：自制（LibreOffice 导出 / 打印扫描）。
 
 ## 里程碑
 
-- **M1（Phase 0–2 完成）**：扫描 PDF 可用 CLI 转 Markdown，测试通过
-- **M2（Phase 3 完成）**：Office 扫描图 OCR 可用
-- **M3（Phase 4 完成）**：性能达标，文档齐全，可发布 release
-
-**总工作量估算**：5–7 个工作日（1 人全职）。
+- **M1（Phase 0–2）✅**：扫描 PDF 可用 CLI 转 Markdown，测试通过
+- **M2（Phase 3）✅**：Office 扫描图 OCR 可用
+- **M3（Phase 4）**：性能达标，文档齐全，可发布 release

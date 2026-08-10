@@ -39,17 +39,28 @@ OCR 相关参数：
 | `--ocr` | 启用 OCR | 关 |
 | `--ocr-strategy` | `conservative` / `aggressive` | `conservative` |
 | `--ocr-models <dir>` | 模型目录 | `./models` |
-| `--ocr-threads <N>` | OCR 线程数 | CPU 核数（上限 8） |
+| `--ocr-threads <N>` | OCR 推理线程数 | 引擎自动 |
 
 ## OCR 模型
 
-OCR 需要 PP-OCRv5-FP16 模型文件（共约 20MB），放在 `models/` 目录：
+OCR 需要 PP-OCRv5-FP16 模型文件（共约 11MB），放在 `models/` 目录：
 
 - `PP-OCRv5_mobile_det_fp16.mnn`（检测）
 - `PP-OCRv5_mobile_rec_fp16.mnn`（识别）
 - `ppocr_keys_v5.txt`（字典）
 
-`cargo build` 时 build.rs 会自动下载缺失的模型；也可通过 `--ocr-models` 指定其他目录。未启用 `--ocr` 时不需要模型。
+模型不进 git。下载方式：
+
+```bash
+scripts/download-models.sh        # 下载到 ./models
+scripts/download-models.sh /path  # 或指定目录，配合 --ocr-models 使用
+```
+
+未启用 `--ocr` 时不需要模型。
+
+## 已知限制
+
+- MNN 推理库在初始化时会向 **stdout** 打印 CPU 拓扑信息（`CPU Group: ...`），无法从库层面关闭。管道使用 Markdown 输出时建议用 `-o` 写文件，或过滤这些行。
 
 ## 作为库使用
 

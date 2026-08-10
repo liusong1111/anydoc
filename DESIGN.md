@@ -36,7 +36,9 @@
 
 ## 3. 核心决策：嵌入式 OCR
 
-第一版采用**进程内嵌入式**方案：`ocr-rs`（rust-paddle-ocr）+ PP-OCRv5-FP16 模型，MNN 推理，CPU-only。
+第一版采用**进程内嵌入式**方案：`ocr-rs` crate（[rust-paddle-ocr](https://github.com/zibo-chen/rust-paddle-ocr) 的 crates.io 发布名，2.4.x）+ PP-OCRv5-FP16 模型，MNN 推理，CPU-only。
+
+> 注：文档早期草稿曾设想独立 HTTP OCR 服务（GPU + 函数计算），已在选型中被嵌入式方案否决，仅在 §7 保留为未来方向。另注：该仓库的 `main` 分支（crate 名 `rust-paddle-ocr`，1.4.x）在 Linux x86_64 上有 MNN 张量拷贝 bug（NC4HW4 对齐问题），且 `Det`/`Rec` 非 Send；发布版 `ocr-rs` 2.x（对应其 `next` 分支，vendored MNN）已验证可用，选型以其为准。
 
 ### 选型依据
 
@@ -138,11 +140,10 @@ pub enum OcrError {
 
 ### 5.2 嵌入式后端（`src/ocr/embedded.rs`）
 
-`EmbeddedOcrBackend` 包装 `ocr_rs::OcrEngine`（`Arc` 共享，可 Clone）：
+`EmbeddedOcrBackend` 直接包装 `ocr_rs::OcrEngine`（`Send + Sync`，`&self` 入口）：
 
-- `from_model_dir(dir)`：从目录加载 det/rec/keys 三个文件
-- `recognize()`：解码图片（image crate）→ 超限缩放 → 引擎识别 → 按阅读顺序排序（先 Y 后 X，同行容差 20px）→ 拼接文本 + 平均置信度
-- `recognize_batch()`：rayon 并行
+- `from_model_dir(dir)` / `from_model_dir_with_threads(dir, n)` / `from_files(det, rec, keys, threads)`
+- `recognize()`：解码图片（image crate）→ 超限缩放 → `engine.recognize()` 一次调用返回文本框 + 置信度 → 按阅读顺序排序（先 Y 后 X，同行容差 20px）→ 拼接文本 + 平均置信度
 
 ### 5.3 OCR 决策（`src/ocr/strategy.rs`）
 
@@ -154,10 +155,10 @@ pub fn needs_ocr(block: &Block, assets: &[Asset], strategy: OcrStrategy, context
 
 `is_document_scan()` 启发式（排除法 + 尺寸特征）：
 
-1. 排除：表格内的图（图表/Logo）；conservative 模式下排除前后有文本的 inline 插图
-2. 尺寸特征：宽高比在 0.65–0.85（A4 ≈ 0.707，Letter ≈ 0.774）且宽度 ≥ 1200px
-3. 文件名含 `scan` 直接判真
-4. conservative 要求更高置信（宽度 ≥ 1500px），aggressive 放宽
+1. 排除：非 image/* 类型；表格内的图（图表/Logo）；conservative 模式下排除同段有文本的 inline 插图
+2. 尺寸特征：短边/长边在 0.68–0.80（A4/B5 ≈ 0.707，Legal ≈ 0.72，Letter ≈ 0.77；横竖版均可），且长边 ≥ 阈值
+3. 阈值：conservative 长边 ≥ 1500px，aggressive ≥ 1200px
+4. 已知误报：大尺寸 4:3 照片（0.75）落在纸张区间内，靠 conservative 的 inline 排除缓解
 
 ### 5.4 PDF 集成（`src/formats/pdf.rs`）
 
@@ -167,12 +168,12 @@ pub fn needs_ocr(block: &Block, assets: &[Asset], strategy: OcrStrategy, context
 pub fn to_markdown_with_ocr(bytes: &[u8], ocr: Option<&dyn OcrBackend>) -> Result<String, ConvertError>
 ```
 
-逻辑：`pdf_inspector::process_pdf_mem()` → 若 `pages_needing_ocr` 非空：
+逻辑：
 
-- 有 backend：逐页渲染为 PNG → OCR → 按 `## 第 N 页 (OCR)` 插入 Markdown；置信度 < 0.8 打 warn 日志
-- 无 backend：整篇无文本时报错提示需要 `--ocr`；部分页缺文本时 warn 降级（沿用现有策略）
+- 快速路径与上游一致：`pdf_inspector::process_pdf_mem()`，无 OCR 页或未给 backend 时行为不变（部分页缺文本 warn 降级，整篇无文本报错提示需要 `--ocr`）
+- OCR 路径：用 `pdf_inspector::extract_pages_markdown_mem()` 拿**逐页**结果，文本页直接用其 Markdown，OCR 页渲染成图后识别，**按页序拼接**（混合 PDF 不乱序）；OCR 失败的页 warn 降级回原始提取结果
 
-PDF 页渲染为图片依赖 `pdfium-render`（或 `pdf_oxide`，实施时验证后定）。
+PDF 页渲染用 **hayro**（纯 Rust、无 unsafe、无外部二进制依赖；已否决需要外挂 libpdfium 的 pdfium-render），渲染比例 3×（≈216 DPI）。
 
 ### 5.5 Office 集成（`src/lib.rs`）
 
@@ -181,7 +182,7 @@ pub fn to_markdown_with_ocr(path, ocr: Option<&dyn OcrBackend>, strategy: OcrStr
 pub fn to_markdown_bytes_with_ocr(bytes, format, ocr, strategy) -> Result<String, ConvertError>
 ```
 
-DOC/DOCX/PPT/PPTX：正常解析为 `Document` → 遍历 blocks 用 `needs_ocr()` 筛选 → 批量 OCR → 将扫描图块替换为 OCR 文本段落（原图保留在 `document.assets` 中）→ 渲染 Markdown。Excel/CSV 等不走 OCR。
+DOC/DOCX/PPT/PPTX：正常解析为 `Document` → `ocr::apply_to_document()` 递归遍历 blocks（含表格单元格、列表、引用、批注内的嵌套结构）→ 对 `is_document_scan()` 命中的 `Inline::Image` 调用 OCR → **识别文本写入图片的 alt**（Markdown 中图片即以 alt 呈现），原图字节保留在 `Document::assets`。OCR 失败的图片 warn 降级、不影响转换。Excel/CSV 等不走 OCR。
 
 ### 5.6 CLI（`src/bin/any2md.rs`）
 
@@ -198,10 +199,12 @@ any2md <INPUT> [-o OUTPUT] [-f FORMAT] [--ocr] [--ocr-strategy S]
 
 ## 6. 模型文件管理
 
-模型共约 20MB，不进 git。获取方式（按优先级）：
+模型共约 11MB（FP16），不进 git（`.gitignore` 排除 `models/*.mnn` / `models/*.txt`）。获取方式（按优先级）：
 
 1. `--ocr-models <dir>` 显式指定
-2. `./models/` 默认目录；`cargo build` 时 build.rs 自动下载缺失文件（PaddleOCR 官方 bos 地址），无网络时给出明确错误提示手动下载
+2. `./models/` 默认目录；`scripts/download-models.sh` 从 rust-paddle-ocr 仓库下载三件套（模型是该仓库维护的 PP-OCRv5 官方 MNN FP16 转换版）
+
+（早期方案的 build.rs 编译时自动下载已否决：库的普通构建不应依赖网络。）
 
 ---
 

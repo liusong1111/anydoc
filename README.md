@@ -14,7 +14,36 @@
 ## 构建
 
 ```bash
-cargo build --release        # 生成 target/release/any2md
+# 开发：本机构建
+cargo build --release        # 生成 target/release/any2md（glibc 动态链接）
+
+# 发布：musl 全静态二进制 + tar.gz 发行包（推荐，见下）
+just build                   # → dist/any2md/（static-pie，零动态依赖）
+just package                 # → any2md-linux-x86_64-<tag>.tar.gz
+```
+
+musl 静态构建的额外依赖（仅 `just build` 需要）：
+
+1. `rustup target add x86_64-unknown-linux-musl`
+2. musl C++ 交叉工具链（ocr-rs 要用 g++ 编译 MNN 源码；Ubuntu 的 musl-tools 只有 C 编译器，不够）：
+   ```bash
+   curl -L https://musl.cc/x86_64-linux-musl-cross.tgz | tar xz -C ~/.local/share/
+   ```
+   默认路径 `~/.local/share/x86_64-linux-musl-cross`，不同则改 Justfile 里的 `musl_toolchain` 变量。
+
+> 注：musl 构建需要两个链接期补丁，已内置在仓库里：`src/ocr/musl_fortify_shim.c`
+> 提供 musl 缺失的 glibc `__*_chk` / `__libc_single_threaded` 符号（build.rs
+> 仅在 musl target 编译它），Justfile 里的 target 级 RUSTFLAGS 处理链接顺序
+> 和静态 libstdc++。普通 `cargo build`（glibc）完全不经过这些。
+
+## Docker
+
+```bash
+just docker-build            # 构建镜像（基于 alpine，内含静态二进制 + OCR 模型）
+just docker-push             # 推送到 registry（见 Justfile image_name 变量）
+
+# 使用：把文件目录挂到 /data，用绝对路径读写
+docker run --rm -v "$PWD:/data" <image> /data/scan.pdf --ocr -o /data/out.md
 ```
 
 ## 使用

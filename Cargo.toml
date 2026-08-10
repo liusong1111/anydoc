@@ -31,6 +31,11 @@ log = "0.4"
 pdf-inspector = "0.1.7"
 quick-xml = "0.41.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+# OCR（any2md 新增）：PP-OCRv5 模型 + MNN 推理，进程内嵌入式
+rust-paddle-ocr = { git = "https://github.com/zibo-chen/rust-paddle-ocr.git", branch = "main" }
+image = "0.25"
+# PDF 页渲染为位图（纯 Rust，无外部依赖），供扫描页 OCR 使用
+hayro = "0.7"
 
 [profile.release]
 lto = "thin"

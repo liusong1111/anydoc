@@ -7,6 +7,7 @@
 #![warn(missing_docs)]
 
 pub mod model;
+pub mod ocr;
 
 mod error;
 mod formats;
@@ -135,6 +136,49 @@ pub fn to_document(
     format: impl Into<Option<Format>>,
 ) -> Result<model::Document, ConvertError> {
     formats::parse(bytes, resolve_format(bytes, format.into())?)
+}
+
+/// Convert a document file to Markdown, OCR'ing scanned content when a
+/// backend is given. Detection and format handling match [`to_markdown`].
+///
+/// Without a backend the behavior is exactly [`to_markdown`]'s. With one:
+/// scanned PDF pages are rendered and recognized, and embedded images that
+/// look like page scans (per `strategy`) get their recognized text as alt
+/// text. See [`ocr`] for backends and options.
+pub fn to_markdown_with_ocr(
+    path: impl AsRef<Path>,
+    ocr: Option<&dyn ocr::OcrBackend>,
+    strategy: ocr::OcrStrategy,
+) -> Result<String, ConvertError> {
+    let path = path.as_ref();
+    let bytes = std::fs::read(path)?;
+    let Some(format) = Format::from_bytes(&bytes).or_else(|| Format::from_path(path)) else {
+        return Err(ConvertError::Unsupported(format!(
+            "unrecognized file content and extension: {}",
+            path.display()
+        )));
+    };
+    to_markdown_bytes_with_ocr(&bytes, format, ocr, strategy)
+}
+
+/// Convert an in-memory document to Markdown, OCR'ing scanned content when
+/// a backend is given. The bytes/format/None-detection contract matches
+/// [`to_markdown_bytes`].
+pub fn to_markdown_bytes_with_ocr(
+    bytes: &[u8],
+    format: impl Into<Option<Format>>,
+    ocr: Option<&dyn ocr::OcrBackend>,
+    strategy: ocr::OcrStrategy,
+) -> Result<String, ConvertError> {
+    let format = resolve_format(bytes, format.into())?;
+    if format == Format::Pdf {
+        return formats::pdf::to_markdown_with_ocr(bytes, ocr, &ocr::OcrOptions::default());
+    }
+    let mut document = to_document(bytes, format)?;
+    if let Some(backend) = ocr {
+        ocr::apply_to_document(&mut document, backend, strategy, &ocr::OcrOptions::default());
+    }
+    Ok(document_to_markdown(&document))
 }
 
 fn resolve_format(bytes: &[u8], format: Option<Format>) -> Result<Format, ConvertError> {

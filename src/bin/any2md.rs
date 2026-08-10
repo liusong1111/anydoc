@@ -51,14 +51,20 @@ struct Cli {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    env_logger::Builder::new()
-        .filter_level(match cli.verbose {
-            0 => log::LevelFilter::Warn,
-            1 => log::LevelFilter::Info,
-            2 => log::LevelFilter::Debug,
-            _ => log::LevelFilter::Trace,
-        })
-        .init();
+    let mut logger = env_logger::Builder::new();
+    logger.filter_level(match cli.verbose {
+        0 => log::LevelFilter::Warn,
+        1 => log::LevelFilter::Info,
+        2 => log::LevelFilter::Debug,
+        _ => log::LevelFilter::Trace,
+    });
+    // lopdf dumps entire font dictionaries at Warn when it cannot parse an
+    // encoding (common with Chrome/Skia Type3 fonts). The standard-encoding
+    // fallback it then applies works fine, so only surface these with -v.
+    if cli.verbose == 0 {
+        logger.filter_module("lopdf", log::LevelFilter::Error);
+    }
+    logger.init();
 
     match run(&cli) {
         Ok(()) => ExitCode::SUCCESS,

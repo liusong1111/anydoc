@@ -20,3 +20,6 @@ __pycache__/
 /references/
 # 本地 agent 配置
 /.claude/
+# 打包产物（just build / just package）
+/dist/
+/any2md-linux-*.tar.gz

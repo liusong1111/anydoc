@@ -141,6 +141,7 @@ name = "anydoc"
 version = "0.1.7"
 dependencies = [
  "calamine",
+ "cc",
  "cfb",
  "clap",
  "csv",

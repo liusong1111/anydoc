@@ -21,6 +21,10 @@ include = ["/src", "/examples/convert.rs", "/README.md", "/LICENSE"]
 insta = "1"
 sha2 = "0.11"
 
+[build-dependencies]
+# musl 静态构建时编译 _FORTIFY_SOURCE shim（build.rs，仅 musl target 生效）
+cc = "1"
+
 [dependencies]
 calamine = { version = "0.36.1", features = ["dates"] }
 cfb = "0.14.0"

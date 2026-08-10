@@ -1,0 +1,6 @@
+target
+.git
+.claude
+*.tar.gz
+tests/fixtures-ocr
+references

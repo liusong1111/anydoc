@@ -92,8 +92,10 @@ src/ocr/
 src/bin/any2md.rs    # CLI
 tests/integration_ocr.rs
 benches/ocr_performance.rs
-models/              # 模型文件（git-ignored，build.rs 自动下载）
-build.rs             # 模型下载
+models/              # 模型文件（git-ignored，scripts/download-models.sh 下载）
+scripts/
+├── download-models.sh      # 模型下载
+└── make-ocr-fixtures.py    # 测试夹具生成
 ```
 
 **修改文件**：

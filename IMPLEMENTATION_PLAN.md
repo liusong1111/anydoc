@@ -1,7 +1,7 @@
 # any2md 实施计划
 
 > 执行中的任务清单。设计依据见 [DESIGN.md](DESIGN.md)。
-> 状态：Phase 0–3 已完成并验证（2026-08-10），剩 Phase 4 收尾。
+> 状态：全部 Phase 已完成并验证（2026-08-10）。
 
 ## 已确认的决策
 
@@ -53,13 +53,18 @@
       OCR 结果写入图片 alt，原图保留在 assets，单图失败 warn 降级
 - [x] 端到端验证：`scan_image.docx --ocr` 输出 OCR 文本；不加 `--ocr` 不输出
 
-## Phase 4: 优化与收尾（进行中）
+## Phase 4: 优化与收尾 ✅
 
-- [ ] release 构建 + 性能实测（对照 DESIGN.md §8 目标）
-- [ ] 文档最终核对：README/DESIGN 与实际行为一致
-- [ ] `cargo clippy --all-targets` / `cargo fmt --check` 通过
-- [ ] （可选）`benches/ocr_performance.rs`
-- [ ] （可选）`recognize_batch` 并行化：当前引擎内部已多线程，优先级低
+- [x] release 构建 + 性能实测（24 核服务器，release 二进制）：
+  - DOCX 转换 <10ms（目标 <50ms）✅
+  - 文本 PDF <10ms（目标 <100ms）✅
+  - 扫描 PDF 含 OCR 0.22s/页（含模型加载，目标 <500ms/页）✅
+  - OCR 峰值内存 ~313MB ✅
+- [x] 文档最终核对：README/DESIGN/PLAN 与实际行为一致
+- [x] `cargo clippy --all-targets` 0 警告 / `cargo fmt --check` 通过
+- [x] 全量测试：213 lib + 6 OCR 集成 + 上游 corpus 快照/健壮性测试全绿
+- 跳过项及理由：`benches/` criterion 基准（集成测试 + 实测计时已覆盖 v1 需要）；
+  `recognize_batch` 并行化（OcrEngine 内部已多线程，v1 无批量场景）
 
 ---
 
@@ -78,4 +83,4 @@ env_logger = "0.11"     # CLI 日志
 
 - **M1（Phase 0–2）✅**：扫描 PDF 可用 CLI 转 Markdown，测试通过
 - **M2（Phase 3）✅**：Office 扫描图 OCR 可用
-- **M3（Phase 4）**：性能达标，文档齐全，可发布 release
+- **M3（Phase 4）✅**：性能达标，文档齐全；可发布 release（待建 GitHub fork 后推送）

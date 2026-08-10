@@ -32,6 +32,7 @@ pub fn to_markdown(bytes: &[u8]) -> Result<String, ConvertError> {
     }
     match result.markdown {
         Some(mut markdown) if !markdown.trim().is_empty() => {
+            markdown = strip_underline_tags(&markdown);
             if !markdown.ends_with('\n') {
                 markdown.push('\n');
             }
@@ -71,6 +72,7 @@ pub fn to_markdown_with_ocr(
         }
         return match result.markdown {
             Some(mut markdown) if !markdown.trim().is_empty() => {
+                markdown = strip_underline_tags(&markdown);
                 if !markdown.ends_with('\n') {
                     markdown.push('\n');
                 }
@@ -121,8 +123,15 @@ pub fn to_markdown_with_ocr(
             result.pdf_type, result.page_count
         )));
     }
+    let mut out = strip_underline_tags(&out);
     out.push('\n');
     Ok(out)
+}
+
+/// pdf-inspector wraps geometrically-underlined text in `<u>` tags, which are
+/// not GFM and read as noise downstream. Strip the tags, keep the text.
+fn strip_underline_tags(markdown: &str) -> String {
+    markdown.replace("<u>", "").replace("</u>", "")
 }
 
 /// hayro page renderer, created once per PDF so pages share the parse.
@@ -180,5 +189,25 @@ fn map_error(e: PdfError) -> ConvertError {
         PdfError::NotAPdf(detail) => ConvertError::malformed(format!("not a PDF: {detail}")),
         PdfError::InvalidStructure => ConvertError::malformed("invalid PDF structure"),
         PdfError::Parse(detail) => ConvertError::malformed(detail),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_underline_tags;
+
+    #[test]
+    fn strips_underline_tags_but_keeps_text() {
+        let input = "Relative link to <u>a sibling file</u>. Jump to <u>the bookmark</u>.\n";
+        assert_eq!(
+            strip_underline_tags(input),
+            "Relative link to a sibling file. Jump to the bookmark.\n"
+        );
+    }
+
+    #[test]
+    fn leaves_plain_markdown_untouched() {
+        let input = "# Title\n\nSome **bold** and [a link](https://x.y).\n";
+        assert_eq!(strip_underline_tags(input), input);
     }
 }

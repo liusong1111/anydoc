@@ -20,10 +20,23 @@ include = ["/src", "/examples/convert.rs", "/README.md", "/LICENSE"]
 [dev-dependencies]
 insta = "1"
 sha2 = "0.11"
+tokio = { version = "1", features = ["macros", "rt"] }
+tower = { version = "0.5", features = ["util"] }
 
 [build-dependencies]
 # musl 静态构建时编译 _FORTIFY_SOURCE shim（build.rs，仅 musl target 生效）
 cc = "1"
+
+[features]
+default = ["server"]
+# any2md 二进制的 HTTP server 模式（axum）。wasm/node/python 绑定以
+# default-features = false 依赖本 crate，不会拉到这些依赖。
+server = ["dep:axum", "dep:tokio", "dep:tower-http", "dep:serde_json"]
+
+[[bin]]
+name = "any2md"
+path = "src/bin/any2md/main.rs"
+required-features = ["server"]
 
 [dependencies]
 calamine = { version = "0.36.1", features = ["dates"] }
@@ -44,6 +57,11 @@ hayro = "0.7"
 # CLI（src/bin/any2md.rs）
 clap = { version = "4.5", features = ["derive"] }
 env_logger = "0.11"
+# HTTP server 模式（feature = "server"）
+axum = { version = "0.8", features = ["multipart"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+tower-http = { version = "0.6", features = ["cors", "timeout"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [profile.release]
 lto = "thin"

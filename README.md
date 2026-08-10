@@ -31,6 +31,15 @@ musl 静态构建的额外依赖（仅 `just build` 需要）：
    ```
    默认路径 `~/.local/share/x86_64-linux-musl-cross`，不同则改 Justfile 里的 `musl_toolchain` 变量。
 
+aarch64 交叉构建（产物隔离在 `dist-aarch64/`，镜像用 `Dockerfile.aarch64` + buildx）：
+
+```bash
+rustup target add aarch64-unknown-linux-musl
+curl -L https://musl.cc/aarch64-linux-musl-cross.tgz | tar xz -C ~/.local/share/
+just -f Justfile.aarch64 build          # 交叉编译静态二进制
+just -f Justfile.aarch64 docker-build   # buildx --platform linux/arm64 打镜像
+```
+
 > 注：musl 构建需要两个链接期补丁，已内置在仓库里：`src/ocr/musl_fortify_shim.c`
 > 提供 musl 缺失的 glibc `__*_chk` / `__libc_single_threaded` 符号（build.rs
 > 仅在 musl target 编译它），Justfile 里的 target 级 RUSTFLAGS 处理链接顺序
@@ -41,9 +50,14 @@ musl 静态构建的额外依赖（仅 `just build` 需要）：
 ```bash
 just docker-build            # 构建镜像（基于 alpine，内含静态二进制 + OCR 模型）
 just docker-push             # 推送到 registry（见 Justfile image_name 变量）
+just deploy-dev              # push + 更新 aijoy3-dev 命名空间下的 any2md Deployment
+                             # （首次部署先 kubectl apply -f k8s/ -n aijoy3-dev）
 
 # 使用：把文件目录挂到 /data，用绝对路径读写
 docker run --rm -v "$PWD:/data" <image> /data/scan.pdf --ocr -o /data/out.md
+
+# server 模式：
+docker run --rm -p 8766:8766 -v "$PWD:/data" <image> server
 ```
 
 ## 使用
@@ -69,6 +83,44 @@ OCR 相关参数：
 | `--ocr-strategy` | `conservative` / `aggressive` | `conservative` |
 | `--ocr-models <dir>` | 模型目录 | `./models` |
 | `--ocr-threads <N>` | OCR 推理线程数 | 引擎自动 |
+
+## HTTP API 服务
+
+`server` 子命令把转换能力暴露为 HTTP API（接口形态与 any2text 的 api_server 一致）：
+
+```bash
+any2md server                        # 监听 0.0.0.0:8766，默认加载 OCR 模型
+any2md server --port 9000            # 换端口
+any2md server --no-ocr               # 不加载模型；请求 OCR 时返回错误
+any2md --ocr-models /path server     # 模型不在 ./models 时
+```
+
+端点：`POST /v2/any2md`,multipart 表单：
+
+| 字段 | 说明 |
+|------|------|
+| `file` | 上传的文件内容（与 `path` 二选一） |
+| `path` | 服务器本地文件路径 |
+| `ocr` | `false` / `0` / `no` / `off` 关闭 OCR；**缺省为开** |
+
+响应：`Accept: text/plain` 时返回纯 Markdown 文本；否则返回 JSON：
+
+```json
+{"code": 200, "message": "ok", "data": {"file": "scan.pdf", "markdown": "...", "ocr": true}}
+```
+
+JSON 模式下参数错误同样返回 HTTP 200，由 `code: 400` 携带错误（与 any2text 客户端契约一致）；`text/plain` 模式返回真实 HTTP 状态码。
+
+```bash
+# 上传转换（默认开 OCR）
+curl -F file=@scan.pdf http://localhost:8766/v2/any2md
+
+# 关闭 OCR，只要纯文本
+curl -F file=@report.docx -F ocr=false -H 'Accept: text/plain' http://localhost:8766/v2/any2md
+
+# 服务器本地文件
+curl -F path=/data/scan.pdf http://localhost:8766/v2/any2md
+```
 
 ## OCR 模型
 

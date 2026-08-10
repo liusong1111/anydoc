@@ -23,3 +23,4 @@ __pycache__/
 # 打包产物（just build / just package）
 /dist/
 /any2md-linux-*.tar.gz
+/dist-aarch64/

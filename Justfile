@@ -7,9 +7,13 @@
 #   just test
 #   just clean
 #
-# 镜像：
+# 镜像与部署：
 #   just docker-build       # build + docker build（打时间戳 tag + latest）
 #   just docker-push        # 推送到阿里云 registry
+#   just deploy-dev         # push + kubectl set image 到 aijoy3-dev/any2md
+#   just check-deploy       # 查看 aijoy3-dev 下的 pod
+#
+# aarch64：见 Justfile.aarch64（产物隔离在 dist-aarch64/，镜像用 buildx）。
 #
 # 依赖：rustup target add x86_64-unknown-linux-musl，以及 musl C++ 交叉
 # 工具链（ocr-rs 要用它编译 MNN C++ wrapper；见 README「构建」一节）。
@@ -27,8 +31,10 @@ out := "dist"
 time_tag := `date +"%Y-%m-%d-%H-%M"`
 git_tag := `git describe --always --dirty=-modified`
 git_branch := `git rev-parse --abbrev-ref HEAD`
+# 分支名可能含 /（如 feature/xxx），docker tag 不允许
+git_branch_tag := replace(git_branch, "/", "-")
 arch := `uname -m`
-image_tag := time_tag + "-" + git_branch + "-" + git_tag + "-" + arch
+image_tag := time_tag + "-" + git_branch_tag + "-" + git_tag + "-" + arch
 # 镜像仓库：外网 registry（docker push 用）；k8s 集群内用 registry-vpc（inner，更快）
 image_name := "registry.cn-shanghai.aliyuncs.com/maim1/any2md"
 inner_image_name := "registry-vpc.cn-shanghai.aliyuncs.com/maim1/any2md"
@@ -99,3 +105,13 @@ docker-push: docker-build
     docker push {{ image_name }}:{{ image_tag }}
     docker push {{ image_name }}:latest
     @echo {{ image_name }}:{{ image_tag }}
+
+# 部署到 aijoy3-dev（集群内走 registry-vpc 拉镜像，更快）
+# 首次部署需先 kubectl apply -f k8s/ -n aijoy3-dev 创建 Deployment
+deploy-dev: docker-push
+    kubectl set image deployment/any2md any2md={{ inner_image_name }}:{{ image_tag }} -n aijoy3-dev
+    kubectl get pod -n aijoy3-dev | grep any2md
+
+# 查看部署状态
+check-deploy:
+    kubectl get pod -n aijoy3-dev | grep any2md

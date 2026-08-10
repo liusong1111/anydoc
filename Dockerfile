@@ -8,6 +8,8 @@
 #   - WORKDIR=/app，OCR 模型在 /app/models（CLI 默认模型路径即 ./models）
 #   - 要转换的文件挂载到 /data，用绝对路径读写，例如：
 #       docker run --rm -v "$PWD:/data" <image> /data/scan.pdf --ocr -o /data/out.md
+#   - HTTP API 服务模式（POST /v2/any2md，见 README）：
+#       docker run --rm -p 8766:8766 -v "$PWD:/data" <image> server
 #   - 注意 MNN 初始化会向 stdout 打印 CPU 拓扑信息，管道使用请加 -o 写文件
 
 FROM alpine:3.21

@@ -1,0 +1,24 @@
+# any2md aarch64 运行时镜像（arm64v8/alpine；二进制为 aarch64 musl 静态，零依赖）
+#
+# 构建前置（由 just -f Justfile.aarch64 docker-build 完成）：
+#   - dist-aarch64/any2md/any2md：交叉构建的 aarch64 静态二进制
+#   - models/：PP-OCRv5-FP16 模型
+#
+# 运行约定与 x86_64 镜像一致：CLI 用 /data 挂载；server 模式 -p 8766:8766。
+
+FROM arm64v8/alpine:3.21
+
+RUN apk add --no-cache ca-certificates tzdata
+ENV TZ=Asia/Shanghai
+ENV NO_COLOR=1
+
+WORKDIR /app
+
+COPY dist-aarch64/any2md/any2md /usr/local/bin/any2md
+COPY models/ /app/models/
+
+RUN mkdir -p /data
+VOLUME ["/data"]
+
+ENTRYPOINT ["any2md"]
+CMD ["--help"]

@@ -1,0 +1,43 @@
+# any2md HTTP API 服务（POST /v2/any2md，默认开 OCR）
+# 首次部署：kubectl apply -f k8s/ -n aijoy3-dev
+# 之后发版走 just deploy-dev（kubectl set image）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: any2md
+  labels:
+    app: any2md
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: any2md
+  template:
+    metadata:
+      labels:
+        app: any2md
+    spec:
+      containers:
+        - name: any2md
+          image: registry-vpc.cn-shanghai.aliyuncs.com/maim1/any2md:latest
+          args: ["server"]
+          ports:
+            - containerPort: 8766
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "4"
+              memory: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: any2md
+spec:
+  selector:
+    app: any2md
+  ports:
+    - port: 8766
+      targetPort: 8766

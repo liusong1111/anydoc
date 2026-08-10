@@ -16,3 +16,11 @@ __pycache__/
 /fuzz/corpus/
 /fuzz/artifacts/
 /fuzz/coverage/
+
+# any2md additions
+# OCR 模型文件（~20MB，build.rs 自动下载）
+/models/
+# 本地参考资料（不进 git）
+/references/
+# 本地 agent 配置
+/.claude/

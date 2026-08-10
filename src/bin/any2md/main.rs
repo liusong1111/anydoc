@@ -1,19 +1,22 @@
 //! any2md — convert documents to Markdown, with optional OCR:
 //! `any2md <file> [-o out.md] [-f csv] [--ocr] [--ocr-strategy aggressive]`
+//! `any2md server [--port 8766] [--no-ocr]`
+
+mod server;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anydoc::ocr::{EmbeddedOcrBackend, OcrStrategy};
 use anydoc::{ConvertError, Format};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "any2md", about = "Convert documents to Markdown, with optional OCR")]
 struct Cli {
     /// Input document.
     #[arg(value_name = "INPUT")]
-    input: PathBuf,
+    input: Option<PathBuf>,
 
     /// Write the Markdown here instead of stdout.
     #[arg(short, long, value_name = "OUTPUT")]
@@ -46,9 +49,41 @@ struct Cli {
     /// Increase log verbosity (-v info, -vv debug, -vvv trace).
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
-fn main() -> ExitCode {
+#[derive(Subcommand)]
+enum Command {
+    /// Run as an HTTP API server (POST /v2/any2md).
+    Server(ServerArgs),
+}
+
+#[derive(clap::Args)]
+struct ServerArgs {
+    /// Port to listen on.
+    #[arg(short, long, default_value = "8766")]
+    port: u16,
+
+    /// Start without an OCR backend; requests asking for OCR are rejected.
+    #[arg(long)]
+    no_ocr: bool,
+}
+
+impl Cli {
+    fn strategy(&self) -> OcrStrategy {
+        match self.ocr_strategy.as_str() {
+            "conservative" => OcrStrategy::Conservative,
+            // clap's value_parser restricts the input, so this is the only
+            // other reachable value.
+            _ => OcrStrategy::Aggressive,
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let mut logger = env_logger::Builder::new();
@@ -66,7 +101,11 @@ fn main() -> ExitCode {
     }
     logger.init();
 
-    match run(&cli) {
+    let result = match &cli.command {
+        Some(Command::Server(args)) => server::run(&cli, args).await,
+        None => run(&cli),
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
@@ -76,7 +115,12 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<(), ConvertError> {
-    let bytes = std::fs::read(&cli.input)?;
+    let Some(input) = &cli.input else {
+        return Err(ConvertError::Unsupported(
+            "missing input document (or a subcommand such as `server`)".into(),
+        ));
+    };
+    let bytes = std::fs::read(input)?;
     // Without -f the format comes from the file content, with the extension
     // as the fallback for signature-less formats (CSV).
     let format = match cli
@@ -84,7 +128,7 @@ fn run(cli: &Cli) -> Result<(), ConvertError> {
         .as_deref()
         .and_then(Format::from_extension)
         .or_else(|| Format::from_bytes(&bytes))
-        .or_else(|| Format::from_path(&cli.input))
+        .or_else(|| Format::from_path(input))
     {
         Some(format) => format,
         None if cli.format.is_some() => {
@@ -96,7 +140,7 @@ fn run(cli: &Cli) -> Result<(), ConvertError> {
         None => {
             return Err(ConvertError::Unsupported(format!(
                 "unrecognized file content and extension: {}",
-                cli.input.display()
+                input.display()
             )));
         }
     };
@@ -115,13 +159,7 @@ fn run(cli: &Cli) -> Result<(), ConvertError> {
                         "{e} (model files missing? run scripts/download-models.sh)"
                     ))
                 })?;
-        let strategy = match cli.ocr_strategy.as_str() {
-            "conservative" => OcrStrategy::Conservative,
-            // clap's value_parser restricts the input, so this is the only
-            // other reachable value.
-            _ => OcrStrategy::Aggressive,
-        };
-        anydoc::to_markdown_bytes_with_ocr(&bytes, format, Some(&backend), strategy)?
+        anydoc::to_markdown_bytes_with_ocr(&bytes, format, Some(&backend), cli.strategy())?
     } else {
         anydoc::to_markdown_bytes(&bytes, format)?
     };

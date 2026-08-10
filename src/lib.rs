@@ -8,6 +8,8 @@
 
 pub mod model;
 pub mod ocr;
+#[cfg(feature = "server")]
+pub mod server;
 
 mod error;
 mod formats;

@@ -209,7 +209,7 @@ async fn convert_handler(
             "message": "ok",
             "data": {
                 "file": filename,
-                "markdown": markdown,
+                "full_text": markdown,
                 "ocr": ocr_wanted,
             },
         })),

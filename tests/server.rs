@@ -90,7 +90,7 @@ async fn upload_converts_with_ocr_disabled() {
     assert_eq!(json["code"], 200);
     assert_eq!(json["data"]["file"], "sheet.csv");
     assert_eq!(json["data"]["ocr"], false);
-    let markdown = json["data"]["markdown"].as_str().unwrap();
+    let markdown = json["data"]["full_text"].as_str().unwrap();
     assert!(markdown.contains("Percent"), "markdown: {markdown}");
 }
 

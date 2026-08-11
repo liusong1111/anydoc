@@ -106,7 +106,7 @@ any2md --ocr-models /path server     # 模型不在 ./models 时
 响应：`Accept: text/plain` 时返回纯 Markdown 文本；否则返回 JSON：
 
 ```json
-{"code": 200, "message": "ok", "data": {"file": "scan.pdf", "markdown": "...", "ocr": true}}
+{"code": 200, "message": "ok", "data": {"file": "scan.pdf", "full_text": "...", "ocr": true}}
 ```
 
 JSON 模式下参数错误同样返回 HTTP 200，由 `code: 400` 携带错误（与 any2text 客户端契约一致）；`text/plain` 模式返回真实 HTTP 状态码。

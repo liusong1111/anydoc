@@ -71,13 +71,12 @@ impl OcrBackend for EmbeddedOcrBackend {
             self.engine.recognize(&img).map_err(|e| OcrError::RecognitionFailed(e.to_string()))?;
 
         // Reading order: top to bottom; boxes on the same line left to right.
-        results.sort_by(|a, b| {
-            let (ra, rb) = (&a.bbox.rect, &b.bbox.rect);
-            if (ra.top() - rb.top()).abs() < LINE_TOLERANCE_PX {
-                ra.left().cmp(&rb.left())
-            } else {
-                ra.top().cmp(&rb.top())
-            }
+        // 使用稳定的排序键避免 total order 违反
+        results.sort_by_key(|r| {
+            let rect = &r.bbox.rect;
+            // 将坐标量化到行（按 LINE_TOLERANCE_PX 分组）
+            let line = (rect.top() / LINE_TOLERANCE_PX) * LINE_TOLERANCE_PX;
+            (line, rect.left())
         });
 
         let boxes: Vec<BoundingBox> = results

@@ -9,40 +9,107 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Multipart, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use serde_json::json;
+use tokio::sync::Semaphore;
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
 use crate::ocr::{EmbeddedOcrBackend, OcrStrategy};
 use crate::{ConvertError, Format};
 
-/// Shared server state: the OCR backend (unless started with `--no-ocr`)
-/// and the strategy for treating embedded images as page scans.
+/// Shared server state: the OCR backend (unless started with `--no-ocr`),
+/// the strategy for treating embedded images as page scans, and concurrency
+/// control via semaphores + metrics.
 pub struct AppState {
     ocr: Option<EmbeddedOcrBackend>,
     strategy: OcrStrategy,
+
+    /// Concurrency limit for OCR tasks (CPU-intensive)
+    ocr_semaphore: Arc<Semaphore>,
+
+    /// Concurrency limit for non-OCR tasks (I/O-bound, allows more)
+    parse_semaphore: Arc<Semaphore>,
+
+    /// Metrics for monitoring
+    metrics: Arc<Metrics>,
+}
+
+/// Runtime metrics exposed via /metrics endpoint
+struct Metrics {
+    /// Requests currently being processed
+    active_tasks: AtomicUsize,
+    /// Requests waiting in queue
+    queued_tasks: AtomicUsize,
+    /// Total requests processed since server start
+    total_processed: AtomicU64,
+    /// Total OCR requests processed
+    ocr_processed: AtomicU64,
+}
+
+impl Metrics {
+    fn new() -> Self {
+        Self {
+            active_tasks: AtomicUsize::new(0),
+            queued_tasks: AtomicUsize::new(0),
+            total_processed: AtomicU64::new(0),
+            ocr_processed: AtomicU64::new(0),
+        }
+    }
 }
 
 impl AppState {
     /// Build the shared state. `ocr` is `None` when the server runs without
     /// an OCR backend; requests asking for OCR are then rejected.
+    ///
+    /// Concurrency limits:
+    /// - OCR tasks: limited to CPU core count (CPU-bound)
+    /// - Parse tasks: 2x CPU cores (has I/O waiting time)
     pub fn new(ocr: Option<EmbeddedOcrBackend>, strategy: OcrStrategy) -> Self {
-        Self { ocr, strategy }
+        let cpu_cores = num_cpus::get();
+
+        // Conservative limits: prevent OOM and CPU thrashing
+        let ocr_limit = match cpu_cores {
+            1..=2 => 1,
+            3..=4 => 2,
+            5..=8 => 4,
+            9..=16 => 8,
+            _ => 12,
+        };
+
+        let parse_limit = cpu_cores * 2;
+
+        log::info!(
+            "concurrency limits: ocr={}, parse={} (cpu_cores={})",
+            ocr_limit,
+            parse_limit,
+            cpu_cores
+        );
+
+        Self {
+            ocr,
+            strategy,
+            ocr_semaphore: Arc::new(Semaphore::new(ocr_limit)),
+            parse_semaphore: Arc::new(Semaphore::new(parse_limit)),
+            metrics: Arc::new(Metrics::new()),
+        }
     }
 }
 
-/// The API router: `POST /v2/any2md`, a 2 GiB body limit, a 10-minute
-/// request timeout (504 on expiry), and permissive CORS.
+/// The API router: `POST /v2/any2md` for conversion, `GET /metrics` for
+/// monitoring. Includes a 2 GiB body limit, a 10-minute request timeout
+/// (504 on expiry), and permissive CORS.
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v2/any2md", post(convert_handler))
+        .route("/metrics", get(metrics_handler))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024 * 1024))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,
@@ -86,6 +153,49 @@ fn internal_error(json_mode: bool, message: String) -> Response {
     } else {
         (StatusCode::INTERNAL_SERVER_ERROR, message).into_response()
     }
+}
+
+/// Metrics endpoint: `GET /metrics`
+///
+/// Returns Prometheus-style metrics for monitoring server health and load.
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> Response {
+    let m = &state.metrics;
+
+    let active = m.active_tasks.load(Ordering::Relaxed);
+    let queued = m.queued_tasks.load(Ordering::Relaxed);
+    let total = m.total_processed.load(Ordering::Relaxed);
+    let ocr = m.ocr_processed.load(Ordering::Relaxed);
+
+    let ocr_limit = state.ocr_semaphore.available_permits();
+    let parse_limit = state.parse_semaphore.available_permits();
+
+    let body = format!(
+        "# HELP any2md_active_tasks Number of requests currently being processed\n\
+         # TYPE any2md_active_tasks gauge\n\
+         any2md_active_tasks {active}\n\
+         \n\
+         # HELP any2md_queued_tasks Number of requests waiting in queue\n\
+         # TYPE any2md_queued_tasks gauge\n\
+         any2md_queued_tasks {queued}\n\
+         \n\
+         # HELP any2md_total_processed Total requests processed since server start\n\
+         # TYPE any2md_total_processed counter\n\
+         any2md_total_processed {total}\n\
+         \n\
+         # HELP any2md_ocr_processed Total OCR requests processed\n\
+         # TYPE any2md_ocr_processed counter\n\
+         any2md_ocr_processed {ocr}\n\
+         \n\
+         # HELP any2md_ocr_slots_available OCR semaphore available permits\n\
+         # TYPE any2md_ocr_slots_available gauge\n\
+         any2md_ocr_slots_available {ocr_limit}\n\
+         \n\
+         # HELP any2md_parse_slots_available Parse semaphore available permits\n\
+         # TYPE any2md_parse_slots_available gauge\n\
+         any2md_parse_slots_available {parse_limit}\n"
+    );
+
+    (StatusCode::OK, body).into_response()
 }
 
 async fn convert_handler(
@@ -175,6 +285,27 @@ async fn convert_handler(
     };
     log::info!("convert {filename} ({format:?}, ocr={ocr_wanted})");
 
+    // ===== Concurrency control: acquire semaphore permit =====
+    state.metrics.queued_tasks.fetch_add(1, Ordering::Relaxed);
+
+    let semaphore = if ocr_wanted && state.ocr.is_some() {
+        &state.ocr_semaphore
+    } else {
+        &state.parse_semaphore
+    };
+
+    let _permit = match semaphore.acquire().await {
+        Ok(p) => p,
+        Err(_) => {
+            state.metrics.queued_tasks.fetch_sub(1, Ordering::Relaxed);
+            return internal_error(json_mode, "server semaphore closed".to_string());
+        }
+    };
+
+    state.metrics.queued_tasks.fetch_sub(1, Ordering::Relaxed);
+    state.metrics.active_tasks.fetch_add(1, Ordering::Relaxed);
+    // =========================================================
+
     let state2 = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         match (ocr_wanted, state2.ocr.as_ref()) {
@@ -188,6 +319,14 @@ async fn convert_handler(
         }
     })
     .await;
+
+    // Release metrics
+    state.metrics.active_tasks.fetch_sub(1, Ordering::Relaxed);
+    state.metrics.total_processed.fetch_add(1, Ordering::Relaxed);
+    if ocr_wanted {
+        state.metrics.ocr_processed.fetch_add(1, Ordering::Relaxed);
+    }
+    // _permit dropped here, releasing semaphore slot
 
     let markdown = match result {
         Ok(Ok(markdown)) => markdown,

@@ -16,7 +16,8 @@ pub enum OcrStrategy {
     /// sitting inside a text run. The default.
     #[default]
     Conservative,
-    /// Every paper-shaped image, including ones inlined in text.
+    /// Every large-enough image, regardless of shape. Use for documents with
+    /// non-standard layouts (wide screenshots, collages, multi-page stitches).
     Aggressive,
     /// Never OCR embedded images.
     Disabled,
@@ -34,9 +35,9 @@ pub struct BlockContext {
 
 /// Heuristic: does this asset look like a scanned document page?
 ///
-/// Excludes non-images and (under `Conservative`) inline illustrations,
-/// then checks the page shape: paper-like aspect ratio (A4 ≈ 0.71,
-/// Letter ≈ 0.77, portrait or landscape) and enough resolution for OCR.
+/// `Aggressive`: any image ≥1200px on the long side, ignoring shape.
+/// `Conservative`: paper-shaped (0.68–0.80 ratio) and ≥1500px, excluding
+/// inline illustrations. Both modes skip images in tables.
 pub fn is_document_scan(asset: &Asset, context: &BlockContext, strategy: OcrStrategy) -> bool {
     if matches!(strategy, OcrStrategy::Disabled) || context.in_table {
         return false;
@@ -53,22 +54,19 @@ pub fn is_document_scan(asset: &Asset, context: &BlockContext, strategy: OcrStra
     };
     let long = width.max(height);
     let short = width.min(height);
-    // A4/B5 ≈ 0.707, Legal ≈ 0.72, Letter ≈ 0.77 (portrait or landscape).
-    // 3:2 photos (0.667) fall outside; large 4:3 photos (0.75) are a known
-    // false positive, mitigated by the adjacent-text exclusion under
-    // `Conservative`.
-    let ratio = short as f32 / long as f32;
-    let paper_like = (0.68..=0.80).contains(&ratio);
-    if !paper_like {
-        return false;
+
+    // Aggressive mode: skip shape check, OCR any large-enough image.
+    if matches!(strategy, OcrStrategy::Aggressive) {
+        return long >= 1200;
     }
 
-    let min_long_side = match strategy {
-        OcrStrategy::Conservative => 1500,
-        OcrStrategy::Aggressive => 1200,
-        OcrStrategy::Disabled => unreachable!("disabled returns above"),
-    };
-    long >= min_long_side
+    // Conservative mode: only paper-shaped images.
+    // A4/B5 ≈ 0.707, Legal ≈ 0.72, Letter ≈ 0.77 (portrait or landscape).
+    // 3:2 photos (0.667) fall outside; large 4:3 photos (0.75) are a known
+    // false positive, mitigated by the adjacent-text exclusion.
+    let ratio = short as f32 / long as f32;
+    let paper_like = (0.68..=0.80).contains(&ratio);
+    paper_like && long >= 1500
 }
 
 /// Read image dimensions from the header only (no full decode).
@@ -223,12 +221,14 @@ mod tests {
     #[test]
     fn photos_and_logos_are_not_scans() {
         let ctx = BlockContext::default();
-        // 3:2 photo.
-        assert!(!is_document_scan(&asset(1500, 1000), &ctx, OcrStrategy::Aggressive));
-        // Square logo.
+        // 3:2 photo — large enough for Aggressive, but not paper-shaped for Conservative.
+        assert!(is_document_scan(&asset(1500, 1000), &ctx, OcrStrategy::Aggressive));
+        assert!(!is_document_scan(&asset(1500, 1000), &ctx, OcrStrategy::Conservative));
+        // Square logo — too small for both.
         assert!(!is_document_scan(&asset(800, 800), &ctx, OcrStrategy::Aggressive));
-        // Paper-shaped but too small to OCR usefully.
+        // Paper-shaped but too small for both.
         assert!(!is_document_scan(&asset(710, 1000), &ctx, OcrStrategy::Aggressive));
+        assert!(!is_document_scan(&asset(710, 1000), &ctx, OcrStrategy::Conservative));
     }
 
     #[test]
@@ -237,6 +237,7 @@ mod tests {
         let in_table = BlockContext { in_table: true, has_adjacent_text: false };
         assert!(!is_document_scan(&scan, &in_table, OcrStrategy::Aggressive));
 
+        // Aggressive ignores adjacent text, Conservative respects it.
         let inline = BlockContext { in_table: false, has_adjacent_text: true };
         assert!(!is_document_scan(&scan, &inline, OcrStrategy::Conservative));
         assert!(is_document_scan(&scan, &inline, OcrStrategy::Aggressive));
@@ -253,5 +254,19 @@ mod tests {
             &BlockContext::default(),
             OcrStrategy::Aggressive
         ));
+    }
+
+    #[test]
+    fn aggressive_ocrs_non_standard_shapes() {
+        let ctx = BlockContext::default();
+        // Long stitched image (ratio 0.35) — Aggressive OCRs it, Conservative rejects it.
+        let long_stitch = asset(1504, 4295);
+        assert!(is_document_scan(&long_stitch, &ctx, OcrStrategy::Aggressive));
+        assert!(!is_document_scan(&long_stitch, &ctx, OcrStrategy::Conservative));
+
+        // Near-square screenshot (ratio 0.92) — same behavior.
+        let screenshot = asset(1498, 1633);
+        assert!(is_document_scan(&screenshot, &ctx, OcrStrategy::Aggressive));
+        assert!(!is_document_scan(&screenshot, &ctx, OcrStrategy::Conservative));
     }
 }

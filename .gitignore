@@ -18,6 +18,7 @@ __pycache__/
 /models/*.txt
 # 本地参考资料（不进 git）
 /references/
+/.mineru-ref/
 # 本地 agent 配置
 /.claude/
 # 打包产物（just build / just package）

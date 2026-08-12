@@ -31,7 +31,7 @@ struct Cli {
     ocr: bool,
 
     /// How eagerly embedded images are treated as page scans.
-    #[arg(long, default_value = "conservative", value_parser = ["conservative", "aggressive"])]
+    #[arg(long, default_value = "smart", value_parser = ["disabled", "conservative", "smart", "aggressive"])]
     ocr_strategy: String,
 
     /// Directory holding the PP-OCRv5-FP16 model files.
@@ -74,10 +74,11 @@ struct ServerArgs {
 impl Cli {
     fn strategy(&self) -> OcrStrategy {
         match self.ocr_strategy.as_str() {
+            "disabled" => OcrStrategy::Disabled,
             "conservative" => OcrStrategy::Conservative,
-            // clap's value_parser restricts the input, so this is the only
-            // other reachable value.
-            _ => OcrStrategy::Aggressive,
+            "smart" => OcrStrategy::Smart,
+            "aggressive" => OcrStrategy::Aggressive,
+            _ => OcrStrategy::Smart, // 默认 Smart
         }
     }
 }

@@ -7,10 +7,14 @@
 
 mod backend;
 mod embedded;
+mod image_features;
+mod sampling;
 mod strategy;
 
 pub use backend::{BoundingBox, OcrBackend, OcrError, OcrOptions, OcrResult};
 pub use embedded::EmbeddedOcrBackend;
-pub use strategy::{BlockContext, OcrStrategy, is_document_scan};
+pub use image_features::{ImageFeatures, TextLikelihood};
+pub use sampling::SamplingOcrOptions;
+pub use strategy::{BlockContext, OcrStrategy};
 
 pub(crate) use strategy::apply_to_document;

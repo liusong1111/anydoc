@@ -26,8 +26,8 @@ struct Cli {
     #[arg(short, long, value_name = "FORMAT")]
     format: Option<String>,
 
-    /// Output format: markdown (default) or plain text.
-    #[arg(short = 'F', long, default_value = "markdown", value_parser = ["markdown", "md", "plain", "text", "plaintext", "txt"])]
+    /// Output format: markdown (default), plain text, or HTML.
+    #[arg(short = 'F', long, default_value = "markdown", value_parser = ["markdown", "md", "plain", "text", "plaintext", "txt", "html", "htm", "html-full", "html-doc"])]
     output_format: String,
 
     /// Enable OCR for scanned PDF pages and embedded page scans.

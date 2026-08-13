@@ -10,17 +10,25 @@ pub enum OutputFormat {
     Markdown,
     /// Plain text without markup.
     PlainText,
+    /// HTML fragment: block-level elements only, no document wrapper.
+    Html,
+    /// Complete HTML document: `<!DOCTYPE html>` + `<head>` (with base CSS)
+    /// + `<body>`.
+    HtmlDocument,
 }
 
 impl FromStr for OutputFormat {
     type Err = ();
 
-    /// Parse case-insensitively: `"markdown"`/`"md"` and
-    /// `"plain"`/`"text"`/`"plaintext"`/`"txt"`.
+    /// Parse case-insensitively: `"markdown"`/`"md"`,
+    /// `"plain"`/`"text"`/`"plaintext"`/`"txt"`,
+    /// `"html"`/`"htm"` (fragment), and `"html-full"`/`"html-doc"` (document).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "markdown" | "md" => Ok(Self::Markdown),
             "plain" | "text" | "plaintext" | "txt" => Ok(Self::PlainText),
+            "html" | "htm" => Ok(Self::Html),
+            "html-full" | "html-doc" | "htmldoc" => Ok(Self::HtmlDocument),
             _ => Err(()),
         }
     }
@@ -32,6 +40,13 @@ impl OutputFormat {
         match self {
             Self::Markdown => "markdown",
             Self::PlainText => "plain",
+            Self::Html => "html",
+            Self::HtmlDocument => "html-doc",
         }
+    }
+
+    /// True for HTML output, fragment or full document.
+    pub fn is_html(&self) -> bool {
+        matches!(self, Self::Html | Self::HtmlDocument)
     }
 }

@@ -21,6 +21,7 @@ mod shared;
 pub use error::ConvertError;
 pub use output::OutputFormat;
 
+use render::html::document_to_html;
 use render::markdown::document_to_markdown;
 use render::plaintext::document_to_plaintext;
 
@@ -190,15 +191,17 @@ pub fn to_output_bytes_with_ocr(
 ) -> Result<String, ConvertError> {
     let format = resolve_format(bytes, format.into())?;
     if format == Format::Pdf {
+        // PDFs convert to Markdown directly (pdf-inspector) and never pass
+        // through the document model, so non-Markdown outputs derive from the
+        // Markdown: plain text strips markup, HTML goes through a Markdown
+        // parser.
         let markdown = formats::pdf::to_markdown_with_ocr(bytes, ocr, &ocr::OcrOptions::default())?;
-        return match output_format {
-            OutputFormat::Markdown => Ok(markdown),
-            OutputFormat::PlainText => {
-                // For PDF, we already have markdown; convert to plain text by stripping markup
-                // This is a simplification - ideally we'd render PDF directly to plain text
-                Ok(markdown_to_plaintext_fallback(&markdown))
-            }
-        };
+        return Ok(match output_format {
+            OutputFormat::Markdown => markdown,
+            OutputFormat::PlainText => markdown_to_plaintext_fallback(&markdown),
+            OutputFormat::Html => markdown_to_html(&markdown),
+            OutputFormat::HtmlDocument => wrap_html_document(&markdown_to_html(&markdown)),
+        });
     }
     let mut document = to_document(bytes, format)?;
     if let Some(backend) = ocr {
@@ -212,7 +215,32 @@ fn render_document(doc: &model::Document, output_format: OutputFormat) -> String
     match output_format {
         OutputFormat::Markdown => document_to_markdown(doc),
         OutputFormat::PlainText => document_to_plaintext(doc),
+        OutputFormat::Html => document_to_html(doc, false),
+        OutputFormat::HtmlDocument => document_to_html(doc, true),
     }
+}
+
+/// Convert Markdown to an HTML fragment with pulldown-cmark, enabling the GFM
+/// extensions (tables, strikethrough, task lists, footnotes) that the
+/// Markdown renderer emits.
+fn markdown_to_html(markdown: &str) -> String {
+    let mut options = pulldown_cmark::Options::empty();
+    options.insert(pulldown_cmark::Options::ENABLE_TABLES);
+    options.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
+    options.insert(pulldown_cmark::Options::ENABLE_TASKLISTS);
+    options.insert(pulldown_cmark::Options::ENABLE_FOOTNOTES);
+    let parser = pulldown_cmark::Parser::new_ext(markdown, options);
+    let mut out = String::with_capacity(markdown.len());
+    pulldown_cmark::html::push_html(&mut out, parser);
+    out
+}
+
+/// Wrap an HTML fragment in a minimal standalone document (PDF path only:
+/// non-PDF HTML uses the renderer's own wrapper and stylesheet).
+fn wrap_html_document(fragment: &str) -> String {
+    format!(
+        "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n{fragment}\n</body>\n</html>\n"
+    )
 }
 
 /// Fallback for converting markdown text to plain text (used for PDF path).

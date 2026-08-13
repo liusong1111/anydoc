@@ -63,6 +63,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = tr
 tower-http = { version = "0.6", features = ["cors", "timeout"], optional = true }
 serde_json = { version = "1", optional = true }
 num_cpus = "1"
+# PDF 的 markdown 输出转 HTML（PDF 不经过 Document 模型）
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 
 [profile.release]
 lto = "thin"

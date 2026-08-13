@@ -141,3 +141,23 @@ async fn output_format_plain_returns_plain_text() {
     // Plain text tables use aligned columns, not GFM pipes.
     assert!(!text.contains("| Kind |"), "text: {text}");
 }
+
+#[tokio::test]
+async fn output_format_html_returns_html_fragment() {
+    let csv = std::fs::read("tests/fixtures/csv/sheet.csv").unwrap();
+    let req = multipart_request(
+        vec![
+            file_part("file", "sheet.csv", &csv),
+            text_part("TESTBOUNDARY", "ocr", "false"),
+            text_part("TESTBOUNDARY", "output_format", "html"),
+        ],
+        None,
+    );
+    let (status, json, _) = response(app().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["code"], 200);
+    let text = json["data"]["full_text"].as_str().unwrap();
+    assert!(text.contains("<table>"), "table: {text}");
+    assert!(text.contains("<th>Kind</th>"), "header cell: {text}");
+    assert!(!text.contains("<!DOCTYPE html>"), "fragment only: {text}");
+}

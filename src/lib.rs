@@ -8,6 +8,7 @@
 
 pub mod model;
 pub mod ocr;
+pub mod output;
 #[cfg(feature = "server")]
 pub mod server;
 
@@ -18,8 +19,10 @@ mod render;
 mod shared;
 
 pub use error::ConvertError;
+pub use output::OutputFormat;
 
 use render::markdown::document_to_markdown;
+use render::plaintext::document_to_plaintext;
 
 use std::path::Path;
 
@@ -172,15 +175,73 @@ pub fn to_markdown_bytes_with_ocr(
     ocr: Option<&dyn ocr::OcrBackend>,
     strategy: ocr::OcrStrategy,
 ) -> Result<String, ConvertError> {
+    to_output_bytes_with_ocr(bytes, format, OutputFormat::Markdown, ocr, strategy)
+}
+
+/// Convert an in-memory document to the specified output format, OCR'ing
+/// scanned content when a backend is given. The bytes/format/None-detection
+/// contract matches [`to_markdown_bytes`].
+pub fn to_output_bytes_with_ocr(
+    bytes: &[u8],
+    format: impl Into<Option<Format>>,
+    output_format: OutputFormat,
+    ocr: Option<&dyn ocr::OcrBackend>,
+    strategy: ocr::OcrStrategy,
+) -> Result<String, ConvertError> {
     let format = resolve_format(bytes, format.into())?;
     if format == Format::Pdf {
-        return formats::pdf::to_markdown_with_ocr(bytes, ocr, &ocr::OcrOptions::default());
+        let markdown = formats::pdf::to_markdown_with_ocr(bytes, ocr, &ocr::OcrOptions::default())?;
+        return match output_format {
+            OutputFormat::Markdown => Ok(markdown),
+            OutputFormat::PlainText => {
+                // For PDF, we already have markdown; convert to plain text by stripping markup
+                // This is a simplification - ideally we'd render PDF directly to plain text
+                Ok(markdown_to_plaintext_fallback(&markdown))
+            }
+        };
     }
     let mut document = to_document(bytes, format)?;
     if let Some(backend) = ocr {
         ocr::apply_to_document(&mut document, backend, strategy, &ocr::OcrOptions::default());
     }
-    Ok(document_to_markdown(&document))
+    Ok(render_document(&document, output_format))
+}
+
+/// Render a document to the specified output format.
+fn render_document(doc: &model::Document, output_format: OutputFormat) -> String {
+    match output_format {
+        OutputFormat::Markdown => document_to_markdown(doc),
+        OutputFormat::PlainText => document_to_plaintext(doc),
+    }
+}
+
+/// Fallback for converting markdown text to plain text (used for PDF path).
+/// This is a simple approach that strips common markdown syntax.
+fn markdown_to_plaintext_fallback(markdown: &str) -> String {
+    let mut out = String::new();
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        // Strip heading markers
+        let line = if let Some(stripped) = trimmed.strip_prefix("######") {
+            stripped.trim()
+        } else if let Some(stripped) = trimmed.strip_prefix("#####") {
+            stripped.trim()
+        } else if let Some(stripped) = trimmed.strip_prefix("####") {
+            stripped.trim()
+        } else if let Some(stripped) = trimmed.strip_prefix("###") {
+            stripped.trim()
+        } else if let Some(stripped) = trimmed.strip_prefix("##") {
+            stripped.trim()
+        } else if let Some(stripped) = trimmed.strip_prefix("#") {
+            stripped.trim()
+        } else {
+            trimmed
+        };
+
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 fn resolve_format(bytes: &[u8], format: Option<Format>) -> Result<Format, ConvertError> {

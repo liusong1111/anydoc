@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anydoc::ocr::{EmbeddedOcrBackend, OcrStrategy};
-use anydoc::{ConvertError, Format};
+use anydoc::{ConvertError, Format, OutputFormat};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -25,6 +25,10 @@ struct Cli {
     /// Name the input format (e.g. csv) instead of detecting it.
     #[arg(short, long, value_name = "FORMAT")]
     format: Option<String>,
+
+    /// Output format: markdown (default) or plain text.
+    #[arg(short = 'F', long, default_value = "markdown", value_parser = ["markdown", "md", "plain", "text", "plaintext", "txt"])]
+    output_format: String,
 
     /// Enable OCR for scanned PDF pages and embedded page scans.
     #[arg(long)]
@@ -80,6 +84,10 @@ impl Cli {
             "aggressive" => OcrStrategy::Aggressive,
             _ => OcrStrategy::Smart, // 默认 Smart
         }
+    }
+
+    fn output_format(&self) -> OutputFormat {
+        self.output_format.parse().unwrap_or_default()
     }
 }
 
@@ -152,7 +160,7 @@ fn run(cli: &Cli) -> Result<(), ConvertError> {
     }
     log::info!("detected format: {format:?}");
 
-    let markdown = if cli.ocr {
+    let output = if cli.ocr {
         let backend =
             EmbeddedOcrBackend::from_model_dir_with_threads(&cli.ocr_models, cli.ocr_threads)
                 .map_err(|e| {
@@ -160,16 +168,21 @@ fn run(cli: &Cli) -> Result<(), ConvertError> {
                         "{e} (model files missing? run scripts/download-models.sh)"
                     ))
                 })?;
-        anydoc::to_markdown_bytes_with_ocr(&bytes, format, Some(&backend), cli.strategy())?
+        anydoc::to_output_bytes_with_ocr(&bytes, format, cli.output_format(), Some(&backend), cli.strategy())?
     } else {
-        anydoc::to_markdown_bytes(&bytes, format)?
+        let output_format = cli.output_format();
+        if output_format == OutputFormat::Markdown {
+            anydoc::to_markdown_bytes(&bytes, format)?
+        } else {
+            anydoc::to_output_bytes_with_ocr(&bytes, format, output_format, None, OcrStrategy::Disabled)?
+        }
     };
 
     match &cli.output {
-        Some(path) => std::fs::write(path, markdown)?,
+        Some(path) => std::fs::write(path, output)?,
         None => {
             use std::io::Write;
-            let _ = std::io::stdout().write_all(markdown.as_bytes());
+            let _ = std::io::stdout().write_all(output.as_bytes());
         }
     }
     Ok(())

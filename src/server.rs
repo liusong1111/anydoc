@@ -23,7 +23,7 @@ use tokio::sync::Semaphore;
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
 use crate::ocr::{EmbeddedOcrBackend, OcrStrategy};
-use crate::{ConvertError, Format};
+use crate::{ConvertError, Format, OutputFormat};
 
 /// Shared server state: the OCR backend (unless started with `--no-ocr`),
 /// the strategy for treating embedded images as page scans, and concurrency
@@ -210,6 +210,7 @@ async fn convert_handler(
     let mut file_data: Option<axum::body::Bytes> = None;
     let mut path_param: Option<String> = None;
     let mut ocr_wanted = true;
+    let mut output_format = OutputFormat::Markdown;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or_default() {
@@ -238,6 +239,11 @@ async fn convert_handler(
             "ocr" => {
                 if let Ok(text) = field.text().await {
                     ocr_wanted = !ocr_disabled(&text);
+                }
+            }
+            "output_format" => {
+                if let Ok(text) = field.text().await {
+                    output_format = text.trim().parse().unwrap_or(output_format);
                 }
             }
             _ => {}
@@ -312,10 +318,20 @@ async fn convert_handler(
             (true, None) => Err(ConvertError::Unsupported(
                 "OCR requested but the server was started with --no-ocr".into(),
             )),
-            (true, Some(backend)) => {
-                crate::to_markdown_bytes_with_ocr(&bytes, format, Some(backend), state2.strategy)
-            }
-            (false, _) => crate::to_markdown_bytes(&bytes, format),
+            (true, Some(backend)) => crate::to_output_bytes_with_ocr(
+                &bytes,
+                format,
+                output_format,
+                Some(backend),
+                state2.strategy,
+            ),
+            (false, _) => crate::to_output_bytes_with_ocr(
+                &bytes,
+                format,
+                output_format,
+                None,
+                OcrStrategy::Disabled,
+            ),
         }
     })
     .await;
@@ -328,8 +344,8 @@ async fn convert_handler(
     }
     // _permit dropped here, releasing semaphore slot
 
-    let markdown = match result {
-        Ok(Ok(markdown)) => markdown,
+    let converted = match result {
+        Ok(Ok(converted)) => converted,
         Ok(Err(err)) => {
             return client_error(json_mode, format!("解析文件失败,文件={filename}, error={err}"));
         }
@@ -339,7 +355,7 @@ async fn convert_handler(
     };
 
     if !json_mode {
-        return (StatusCode::OK, markdown).into_response();
+        return (StatusCode::OK, converted).into_response();
     }
     (
         StatusCode::OK,
@@ -348,7 +364,7 @@ async fn convert_handler(
             "message": "ok",
             "data": {
                 "file": filename,
-                "full_text": markdown,
+                "full_text": converted,
                 "ocr": ocr_wanted,
             },
         })),

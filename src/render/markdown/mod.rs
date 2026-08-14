@@ -7,12 +7,13 @@ mod table;
 #[cfg(test)]
 mod tests;
 
-use crate::model::{Block, Document, List, MarkerKind, Note, TableKind};
+use crate::export::ImageExportPlan;
+use crate::model::{AssetId, Block, Document, List, MarkerKind, Note, TableKind};
 use crate::render::anchors::{AnchorMap, resolve_anchors};
 use crate::render::notes::{NoteNumbers, number_notes};
 use escape::{EscapeOpts, InlineContext, backtick_fence, escape_text};
 use inline::render_inlines;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Escape a source-derived composite marker label for literal use: control
 /// characters collapse to spaces and Markdown syntax is neutralized so a
@@ -32,10 +33,20 @@ pub(crate) fn escape_marker_label(label: &str, ctx: InlineContext) -> String {
 pub(crate) struct Ctx {
     nums: NoteNumbers,
     anchors: AnchorMap,
+    images: Option<HashMap<AssetId, String>>,
 }
 
+#[cfg(test)]
 pub fn document_to_markdown(doc: &Document) -> String {
-    let rc = Ctx { nums: number_notes(doc), anchors: resolve_anchors(doc) };
+    document_to_markdown_with_images(doc, None)
+}
+
+pub fn document_to_markdown_with_images(doc: &Document, images: Option<&ImageExportPlan>) -> String {
+    let rc = Ctx {
+        nums: number_notes(doc),
+        anchors: resolve_anchors(doc),
+        images: images.map(|p| p.refs().clone()),
+    };
     let mut parts: Vec<String> = doc.blocks.iter().filter_map(|b| render_block(b, &rc)).collect();
     let mut rendered_defs: HashSet<usize> = HashSet::new();
     let mut ordered: Vec<(&Note, usize)> =

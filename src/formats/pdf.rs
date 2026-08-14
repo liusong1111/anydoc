@@ -18,43 +18,12 @@ use pdf_inspector::PdfError;
 /// — enough for PP-OCRv5 without exploding memory on large pages.
 const OCR_RENDER_SCALE: f32 = 3.0;
 
-pub fn to_markdown(bytes: &[u8]) -> Result<String, ConvertError> {
-    let result = pdf_inspector::process_pdf_mem(bytes).map_err(map_error)?;
-    if !result.pages_needing_ocr.is_empty() {
-        // Detection samples content streams and over-reports short or
-        // image-heavy text pages; extraction knows which of them yielded none.
-        let flagged: Vec<u32> = result.pages_needing_ocr.iter().map(|page| page - 1).collect();
-        let pages = pdf_inspector::extract_pages_markdown_mem(bytes, Some(&flagged))
-            .map_err(map_error)?
-            .pages_needing_ocr;
-        if !pages.is_empty() {
-            return Err(ConvertError::NeedsOcr { pages, page_count: result.page_count });
-        }
-    }
-    if result.has_encoding_issues {
-        log::warn!("broken font encodings detected; extracted text may be garbled");
-    }
-    match result.markdown {
-        Some(mut markdown) if !markdown.trim().is_empty() => {
-            markdown = strip_underline_tags(&markdown);
-            if !markdown.ends_with('\n') {
-                markdown.push('\n');
-            }
-            Ok(markdown)
-        }
-        _ => Err(ConvertError::Unsupported(format!(
-            "PDF has no extractable text ({:?}, {} pages)",
-            result.pdf_type, result.page_count
-        ))),
-    }
-}
-
 /// Convert a PDF to Markdown, OCR'ing scanned pages through `backend`.
 ///
 /// Pages are assembled in document order: text pages use pdf-inspector's
 /// per-page extraction, pages it flags as needing OCR are rendered to a
-/// bitmap and recognized. Without a backend this falls back to
-/// [`to_markdown`]'s behavior exactly.
+/// bitmap and recognized. Without a backend this behaves exactly like
+/// [`to_markdown`](crate::to_markdown_bytes)'s PDF path.
 pub fn to_markdown_with_ocr(
     bytes: &[u8],
     ocr: Option<&dyn OcrBackend>,

@@ -89,6 +89,7 @@ src/ocr/
 ├── backend.rs       # OcrBackend trait + OcrOptions/OcrResult/OcrError
 ├── embedded.rs      # EmbeddedOcrBackend（ocr-rs 集成）
 └── strategy.rs      # OcrStrategy + is_document_scan() + BlockContext
+src/export.rs        # 图片导出计划（大插图判定 + 文件名分配）
 src/bin/any2md.rs    # CLI
 tests/integration_ocr.rs
 benches/ocr_performance.rs
@@ -190,12 +191,23 @@ DOC/DOCX/PPT/PPTX：正常解析为 `Document` → `ocr::apply_to_document()` �
 
 ```
 any2md <INPUT> [-o OUTPUT] [-f FORMAT] [--ocr] [--ocr-strategy S]
-       [--ocr-models DIR] [--ocr-threads N] [--detect] [-v...]
+       [--ocr-models DIR] [--ocr-threads N] [--images-dir DIR] [--detect] [-v...]
 ```
 
 - 默认不启用 OCR：纯文本路径零额外开销，也不需要模型文件
 - `--detect`：只输出检测到的格式
+- `--images-dir DIR`：把内嵌大插图导出为文件（需配合 `-o`，图片写到输出文件同目录的 `DIR/`，引用 `DIR/image-N.png`）
 - `-v` 计数式日志级别（默认 warn）
+
+### 5.7 图片导出（`src/export.rs`）
+
+Markdown/HTML 无法内嵌字节，内嵌图（`ImageSource::Asset`）原本只渲染 alt 文本。为保留插图，新增导出计划：
+
+- `is_exportable_illustration()`：区分「大插图」与「装饰图」。阈值：`长边 ≥ 400` 且 `短边 ≥ 200`；排除细条分隔线（短/长 < 0.1）与行内带文字的小图（`长边 < 600`）。
+- `build_export_plan()`：遍历文档（复用 OCR 的块/内联遍历结构），为每个「未被 OCR 消费」的可导出 asset 分配确定文件名 `image-N.<ext>`，并记录相对引用。
+- 决策顺序（每个内嵌图）：① OCR 命中 → 转文字（不导出）；② 可导出插图 → 落盘 + `![]()`；③ 其余（装饰图）→ 跳过。
+- 渲染层通过 `Ctx.images`（asset id → 相对引用）判断：命中则输出 `![alt](ref)`（HTML 为 `<img>`），否则回退为 alt 文本。
+- 库 API `to_output_with_ocr(..., image_prefix: Option<&str>)` 返回 `ConversionOutput { content, images }`；`image_prefix=None` 时完全等同旧行为。CLI 负责落盘，库不碰文件系统（便于 node/python/wasm 复用）。
 
 ---
 

@@ -5,25 +5,41 @@ mod escape;
 mod inline;
 mod table;
 
-use crate::model::{Block, Document, List, ListItem, MarkerKind, Note, TableKind};
+use crate::export::ImageExportPlan;
+use crate::model::{AssetId, Block, Document, List, ListItem, MarkerKind, Note, TableKind};
 use crate::render::anchors::{AnchorMap, resolve_anchors};
 use crate::render::notes::{NoteNumbers, number_notes};
 use escape::escape_attr;
 use inline::render_inlines;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Immutable render context threaded through every render function.
 pub(crate) struct Ctx<'a> {
     pub nums: &'a NoteNumbers,
     pub anchors: &'a AnchorMap,
+    pub images: Option<HashMap<AssetId, String>>,
 }
 
 /// Convert a document to HTML. `full` wraps the fragment in a complete HTML
 /// document with a base stylesheet; `false` returns the bare block fragment.
+#[cfg(test)]
 pub fn document_to_html(doc: &Document, full: bool) -> String {
+    document_to_html_with_images(doc, full, None)
+}
+
+/// Convert a document to HTML, emitting exported illustrations as `<img>`.
+pub fn document_to_html_with_images(
+    doc: &Document,
+    full: bool,
+    images: Option<&ImageExportPlan>,
+) -> String {
     let nums = number_notes(doc);
     let anchors = resolve_anchors(doc);
-    let rc = Ctx { nums: &nums, anchors: &anchors };
+    let rc = Ctx {
+        nums: &nums,
+        anchors: &anchors,
+        images: images.map(|p| p.refs().clone()),
+    };
 
     let body = render_blocks(&doc.blocks, &rc);
     let footnotes = render_footnotes(doc, &rc);

@@ -92,6 +92,24 @@ pub fn media_type_for(part: &str) -> String {
     .to_string()
 }
 
+/// File extension for a media type, the inverse of [`media_type_for`] for the
+/// image types that are saved back to disk. Returns `None` for anything that
+/// is not an image or has no safe file extension.
+pub fn extension_for_media_type(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/bmp" => Some("bmp"),
+        "image/tiff" => Some("tiff"),
+        "image/svg+xml" => Some("svg"),
+        "image/emf" => Some("emf"),
+        "image/wmf" => Some("wmf"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

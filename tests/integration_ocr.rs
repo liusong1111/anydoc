@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use anydoc::ocr::{EmbeddedOcrBackend, OcrStrategy};
-use anydoc::{ConvertError, Format, to_markdown_bytes, to_markdown_bytes_with_ocr};
+use anydoc::{ConvertError, Format, OutputFormat, to_markdown_bytes, to_markdown_bytes_with_ocr, to_output_with_ocr};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures-ocr").join(name);
@@ -102,4 +102,39 @@ fn disabled_strategy_never_ocrs() {
     )
     .unwrap();
     assert!(!markdown.contains("智能文档转换系统"), "got: {markdown}");
+}
+
+#[test]
+fn docx_image_exports_as_file_reference_without_ocr() {
+    // Without OCR the embedded scan image is just a large image: it is
+    // exported as a file and referenced, not OCR'd.
+    let out = to_output_with_ocr(
+        &fixture("scan_image.docx"),
+        Format::Docx,
+        OutputFormat::Markdown,
+        None,
+        OcrStrategy::Disabled,
+        Some("images"),
+    )
+    .unwrap();
+    assert!(out.content.contains("!["), "no image reference: {}", out.content);
+    assert!(out.content.contains("images/image-1."), "got: {}", out.content);
+    assert_eq!(out.images.len(), 1);
+    assert!(out.images[0].filename.starts_with("image-1."));
+    assert!(!out.content.contains("智能文档转换系统"));
+}
+
+#[test]
+fn no_prefix_means_no_image_reference() {
+    let out = to_output_with_ocr(
+        &fixture("scan_image.docx"),
+        Format::Docx,
+        OutputFormat::Markdown,
+        None,
+        OcrStrategy::Disabled,
+        None,
+    )
+    .unwrap();
+    assert!(!out.content.contains("!["), "got: {}", out.content);
+    assert!(out.images.is_empty());
 }

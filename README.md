@@ -67,6 +67,9 @@ docker run --rm -p 8766:8766 -v "$PWD:/data" <image> server
 any2md report.docx
 any2md report.docx -o report.md
 
+# 导出内嵌大插图到 img/，markdown 里以 ![](img/image-1.png) 引用
+any2md report.docx -o report.md --images-dir img
+
 # 启用 OCR（扫描件）
 any2md scan.pdf --ocr -o output.md
 any2md mixed.docx --ocr --ocr-strategy conservative
@@ -80,9 +83,19 @@ OCR 相关参数：
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `--ocr` | 启用 OCR | 关 |
-| `--ocr-strategy` | `conservative` / `aggressive` | `conservative` |
+| `--ocr-strategy` | `disabled` / `conservative` / `smart` / `aggressive` | `smart` |
 | `--ocr-models <dir>` | 模型目录 | `./models` |
 | `--ocr-threads <N>` | OCR 推理线程数 | 引擎自动 |
+
+图片导出：
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--images-dir <dir>` | 把内嵌大插图导出到该目录（需配合 `-o`） | 不导出 |
+
+- `--images-dir` 只在带 `-o` 时生效，图片写到 `<输出文件同目录>/<dir>/`，引用为 `dir/image-N.png`。
+- 只导出「大插图」：`长边 ≥ 400` 且 `短边 ≥ 200`，排除细条分隔线（短/长 < 0.1）与行内小图标。装饰性小图不导出也不引用。
+- 开启 OCR 时，被 OCR 转成文字的扫描图不会作为图片导出，而是直接输出文字。
 
 ## HTTP API 服务
 

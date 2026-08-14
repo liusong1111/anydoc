@@ -22,6 +22,10 @@ struct Cli {
     #[arg(short, long, value_name = "OUTPUT")]
     output: Option<PathBuf>,
 
+    /// Export embedded illustrations to this directory (requires -o/--output).
+    #[arg(long, value_name = "DIR")]
+    images_dir: Option<PathBuf>,
+
     /// Name the input format (e.g. csv) instead of detecting it.
     #[arg(short, long, value_name = "FORMAT")]
     format: Option<String>,
@@ -129,6 +133,11 @@ fn run(cli: &Cli) -> Result<(), ConvertError> {
             "missing input document (or a subcommand such as `server`)".into(),
         ));
     };
+    if cli.images_dir.is_some() && cli.output.is_none() {
+        return Err(ConvertError::Unsupported(
+            "--images-dir requires -o/--output to write files next to".into(),
+        ));
+    }
     let bytes = std::fs::read(input)?;
     // Without -f the format comes from the file content, with the extension
     // as the fallback for signature-less formats (CSV).
@@ -160,6 +169,7 @@ fn run(cli: &Cli) -> Result<(), ConvertError> {
     }
     log::info!("detected format: {format:?}");
 
+    let image_prefix = cli.images_dir.as_ref().map(|d| d.to_string_lossy().into_owned());
     let output = if cli.ocr {
         let backend =
             EmbeddedOcrBackend::from_model_dir_with_threads(&cli.ocr_models, cli.ocr_threads)
@@ -168,22 +178,52 @@ fn run(cli: &Cli) -> Result<(), ConvertError> {
                         "{e} (model files missing? run scripts/download-models.sh)"
                     ))
                 })?;
-        anydoc::to_output_bytes_with_ocr(&bytes, format, cli.output_format(), Some(&backend), cli.strategy())?
+        anydoc::to_output_with_ocr(
+            &bytes,
+            format,
+            cli.output_format(),
+            Some(&backend),
+            cli.strategy(),
+            image_prefix.as_deref(),
+        )?
     } else {
-        let output_format = cli.output_format();
-        if output_format == OutputFormat::Markdown {
-            anydoc::to_markdown_bytes(&bytes, format)?
-        } else {
-            anydoc::to_output_bytes_with_ocr(&bytes, format, output_format, None, OcrStrategy::Disabled)?
-        }
+        anydoc::to_output_with_ocr(
+            &bytes,
+            format,
+            cli.output_format(),
+            None,
+            OcrStrategy::Disabled,
+            image_prefix.as_deref(),
+        )?
     };
 
     match &cli.output {
-        Some(path) => std::fs::write(path, output)?,
+        Some(path) => {
+            std::fs::write(path, &output.content)?;
+            if let Some(dir) = &cli.images_dir {
+                write_images(path, dir, &output.images)?;
+            }
+        }
         None => {
             use std::io::Write;
-            let _ = std::io::stdout().write_all(output.as_bytes());
+            let _ = std::io::stdout().write_all(output.content.as_bytes());
         }
+    }
+    Ok(())
+}
+
+fn write_images(
+    output_path: &std::path::Path,
+    images_dir: &std::path::Path,
+    images: &[anydoc::ExportedImage],
+) -> Result<(), ConvertError> {
+    let base = output_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(images_dir);
+    std::fs::create_dir_all(&base)?;
+    for image in images {
+        std::fs::write(base.join(&image.filename), &image.bytes)?;
     }
     Ok(())
 }

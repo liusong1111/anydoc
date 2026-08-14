@@ -103,7 +103,7 @@ fn render_inlines_mode(inlines: &[Inline], ctx: InlineContext, in_label: bool, r
                 }
             }
             Norm::Link { content, target } => render_link(content, target, ctx, rc, &mut out),
-            Norm::Image { alt, source } => render_image(alt, source, ctx, in_label, &mut out),
+            Norm::Image { alt, source } => render_image(alt, source, ctx, in_label, rc, &mut out),
             Norm::Anchor(id) => {
                 if let Some(html_id) = rc.anchors.html_id(id) {
                     let _ = write!(out, "<a id=\"{html_id}\"></a>");
@@ -156,6 +156,7 @@ fn render_image(
     source: &ImageSource,
     ctx: InlineContext,
     in_label: bool,
+    rc: &Ctx,
     out: &mut String,
 ) {
     match source {
@@ -164,10 +165,30 @@ fn render_image(
                 escape_text(alt.trim(), ctx, EscapeOpts { in_label: true, ..Default::default() });
             let _ = write!(out, "![{}]({})", alt, format_url(url));
         }
+        // An exported illustration renders as a file reference; anything else
+        // (OCR text, decorative images, missing assets) renders as alt text.
+        ImageSource::Asset(id) => {
+            if let Some(reference) = rc.images.as_ref().and_then(|m| m.get(id)) {
+                let alt = escape_text(
+                    alt.trim(),
+                    ctx,
+                    EscapeOpts { in_label: true, ..Default::default() },
+                );
+                let _ = write!(out, "![{}]({})", alt, format_url(reference));
+                return;
+            }
+            if !alt.trim().is_empty() {
+                out.push_str(&escape_text(
+                    alt.trim(),
+                    ctx,
+                    EscapeOpts { in_label, ..Default::default() },
+                ));
+            }
+        }
         // Embedded assets render as their alt text: Markdown cannot embed
         // bytes, and the bytes stay available in `Document::assets`. A
         // source-less image has only its alt text to offer.
-        ImageSource::Asset(_) | ImageSource::Unavailable => {
+        ImageSource::Unavailable => {
             if !alt.trim().is_empty() {
                 out.push_str(&escape_text(
                     alt.trim(),

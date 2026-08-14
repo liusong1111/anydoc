@@ -18,39 +18,12 @@ use pdf_inspector::PdfError;
 /// — enough for PP-OCRv5 without exploding memory on large pages.
 const OCR_RENDER_SCALE: f32 = 3.0;
 
-pub fn to_markdown(bytes: &[u8]) -> Result<String, ConvertError> {
-    let result = pdf_inspector::process_pdf_mem(bytes).map_err(map_error)?;
-    if !result.pages_needing_ocr.is_empty() {
-        log::warn!(
-            "{} of {} pages need OCR and were not extracted",
-            result.pages_needing_ocr.len(),
-            result.page_count
-        );
-    }
-    if result.has_encoding_issues {
-        log::warn!("broken font encodings detected; extracted text may be garbled");
-    }
-    match result.markdown {
-        Some(mut markdown) if !markdown.trim().is_empty() => {
-            markdown = strip_underline_tags(&markdown);
-            if !markdown.ends_with('\n') {
-                markdown.push('\n');
-            }
-            Ok(markdown)
-        }
-        _ => Err(ConvertError::Unsupported(format!(
-            "PDF has no extractable text ({:?}, {} pages): OCR is required",
-            result.pdf_type, result.page_count
-        ))),
-    }
-}
-
 /// Convert a PDF to Markdown, OCR'ing scanned pages through `backend`.
 ///
 /// Pages are assembled in document order: text pages use pdf-inspector's
 /// per-page extraction, pages it flags as needing OCR are rendered to a
-/// bitmap and recognized. Without a backend this falls back to
-/// [`to_markdown`]'s behavior exactly.
+/// bitmap and recognized. Without a backend this behaves exactly like
+/// [`to_markdown`](crate::to_markdown_bytes)'s PDF path.
 pub fn to_markdown_with_ocr(
     bytes: &[u8],
     ocr: Option<&dyn OcrBackend>,

@@ -13,18 +13,21 @@ pub mod output;
 pub mod server;
 
 mod error;
+mod export;
 mod formats;
 mod package;
 mod render;
 mod shared;
 
 pub use error::ConvertError;
+pub use export::ExportedImage;
 pub use output::OutputFormat;
 
-use render::html::document_to_html;
-use render::markdown::document_to_markdown;
+use render::html::{document_to_html_with_images};
+use render::markdown::document_to_markdown_with_images;
 use render::plaintext::document_to_plaintext;
 
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Input format. Selects the parser; container variants that share a parser
@@ -123,13 +126,8 @@ pub fn to_markdown_bytes(
     bytes: &[u8],
     format: impl Into<Option<Format>>,
 ) -> Result<String, ConvertError> {
-    let format = resolve_format(bytes, format.into())?;
-    // PDFs convert to Markdown directly (pdf-inspector) without passing
-    // through the document model.
-    if format == Format::Pdf {
-        return formats::pdf::to_markdown(bytes);
-    }
-    Ok(document_to_markdown(&to_document(bytes, format)?))
+    to_output_with_ocr(bytes, format, OutputFormat::Markdown, None, ocr::OcrStrategy::Disabled, None)
+        .map(|out| out.content)
 }
 
 /// Parse an in-memory document into the document model. Pass a [`Format`] to
@@ -189,34 +187,85 @@ pub fn to_output_bytes_with_ocr(
     ocr: Option<&dyn ocr::OcrBackend>,
     strategy: ocr::OcrStrategy,
 ) -> Result<String, ConvertError> {
+    to_output_with_ocr(bytes, format, output_format, ocr, strategy, None).map(|out| out.content)
+}
+
+/// The result of a conversion that also exports embedded images.
+#[derive(Debug)]
+pub struct ConversionOutput {
+    /// The rendered document.
+    pub content: String,
+    /// Images exported as files, in document order. Empty unless `image_prefix`
+    /// was provided.
+    pub images: Vec<ExportedImage>,
+}
+
+/// Convert an in-memory document to the specified output format, OCR'ing
+/// scanned content when a backend is given, and optionally exporting embedded
+/// illustrations as image files.
+///
+/// `image_prefix` is the directory string prepended to each exported image's
+/// filename in the rendered references (e.g. `"images"` yields
+/// `![...](images/image-1.png)`); `None` disables export and leaves embedded
+/// images as alt text, exactly like [`to_output_bytes_with_ocr`]. When set,
+/// `images` holds the files to write, each named `image-N.ext`. Only large
+/// illustrations are exported — decorative elements and images that OCR turned
+/// into text are left out.
+pub fn to_output_with_ocr(
+    bytes: &[u8],
+    format: impl Into<Option<Format>>,
+    output_format: OutputFormat,
+    ocr: Option<&dyn ocr::OcrBackend>,
+    strategy: ocr::OcrStrategy,
+    image_prefix: Option<&str>,
+) -> Result<ConversionOutput, ConvertError> {
     let format = resolve_format(bytes, format.into())?;
     if format == Format::Pdf {
         // PDFs convert to Markdown directly (pdf-inspector) and never pass
         // through the document model, so non-Markdown outputs derive from the
         // Markdown: plain text strips markup, HTML goes through a Markdown
-        // parser.
+        // parser. PDFs carry no document-model assets, so no image export.
         let markdown = formats::pdf::to_markdown_with_ocr(bytes, ocr, &ocr::OcrOptions::default())?;
-        return Ok(match output_format {
+        let content = match output_format {
             OutputFormat::Markdown => markdown,
             OutputFormat::PlainText => markdown_to_plaintext_fallback(&markdown),
             OutputFormat::Html => markdown_to_html(&markdown),
             OutputFormat::HtmlDocument => wrap_html_document(&markdown_to_html(&markdown)),
-        });
+        };
+        return Ok(ConversionOutput { content, images: Vec::new() });
     }
     let mut document = to_document(bytes, format)?;
-    if let Some(backend) = ocr {
-        ocr::apply_to_document(&mut document, backend, strategy, &ocr::OcrOptions::default());
-    }
-    Ok(render_document(&document, output_format))
+    let ocr_consumed = match ocr {
+        Some(backend) => {
+            ocr::apply_to_document(&mut document, backend, strategy, &ocr::OcrOptions::default())
+        }
+        None => HashSet::new(),
+    };
+    // Images only make sense in formats that can reference them.
+    let plan = if matches!(
+        output_format,
+        OutputFormat::Markdown | OutputFormat::Html | OutputFormat::HtmlDocument
+    ) {
+        export::build_export_plan(&document, &ocr_consumed, image_prefix)
+    } else {
+        None
+    };
+    let content = render_document(&document, output_format, plan.as_ref());
+    let images = plan.map(|p| p.images).unwrap_or_default();
+    Ok(ConversionOutput { content, images })
 }
 
 /// Render a document to the specified output format.
-fn render_document(doc: &model::Document, output_format: OutputFormat) -> String {
+fn render_document(
+    doc: &model::Document,
+    output_format: OutputFormat,
+    plan: Option<&export::ImageExportPlan>,
+) -> String {
     match output_format {
-        OutputFormat::Markdown => document_to_markdown(doc),
+        OutputFormat::Markdown => document_to_markdown_with_images(doc, plan),
         OutputFormat::PlainText => document_to_plaintext(doc),
-        OutputFormat::Html => document_to_html(doc, false),
-        OutputFormat::HtmlDocument => document_to_html(doc, true),
+        OutputFormat::Html => document_to_html_with_images(doc, false, plan),
+        OutputFormat::HtmlDocument => document_to_html_with_images(doc, true, plan),
     }
 }
 

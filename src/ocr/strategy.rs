@@ -7,11 +7,12 @@
 //! (`src/formats/pdf.rs`). This module covers Office documents, where a
 //! scanned page shows up as a large embedded image.
 
-use crate::model::{Asset, Block, CellSlot, Document, ImageSource, Inline};
+use crate::model::{Asset, AssetId, Block, CellSlot, Document, ImageSource, Inline};
 
 use super::backend::{OcrBackend, OcrOptions};
 use super::image_features::{classify_features, extract_features, TextLikelihood};
 use super::sampling::{quick_sample_ocr, SamplingOcrOptions};
+use std::collections::HashSet;
 
 /// How eagerly embedded images are treated as text scans.
 ///
@@ -26,7 +27,7 @@ pub enum OcrStrategy {
     ///
     /// Requirements (AND):
     /// 1. Size: (paper-like ratio 0.68-0.80 AND long≥1500)
-    ///         OR (short≥1200 AND long≥1800)  [high-res fallback]
+    ///    OR (short≥1200 AND long≥1800)  [high-res fallback]
     /// 2. Features: bimodal histogram OR high edge density (>0.15)
     /// 3. Excludes: inline small images (has_adjacent_text)
     ///
@@ -128,18 +129,27 @@ fn should_ocr_image(
         context.in_table
     );
 
-    // 5. In-table images: slightly higher size threshold (avoid small logos)
+    // 5. Paper-shaped page-sized images are strong scan candidates regardless
+    // of their feature likelihood: a page with only a few lines of text has
+    // low edge density and std_dev, so it can classify as Low despite being a
+    // real scan. Photos that happen to land here degrade gracefully (OCR
+    // returns no text); the edge guard skips blank/solid pages.
+    let ratio = short as f32 / long as f32;
+    let paper_like = (0.68..=0.80).contains(&ratio);
+    if paper_like && features.edge_density > 0.01 && long >= paper_min_long(strategy) {
+        return true;
+    }
+
+    // 6. In-table images: slightly higher size threshold (avoid small logos)
     let (min_long, min_short) = if context.in_table {
         (1000, 600)
     } else {
         (800, 400)
     };
 
-    // 6. Strategy-specific decision based on likelihood
+    // 7. Strategy-specific decision based on likelihood
     match likelihood {
-        TextLikelihood::High => should_ocr_high_likelihood(
-            width, height, long, short, &features, strategy, min_long, min_short,
-        ),
+        TextLikelihood::High => should_ocr_high_likelihood(long, short, strategy, min_long, min_short),
 
         TextLikelihood::Medium => {
             should_ocr_medium_likelihood(asset, backend, strategy, long, short, min_long, min_short)
@@ -149,39 +159,37 @@ fn should_ocr_image(
     }
 }
 
-/// High confidence: strong text features (bimodal + high edges)
+/// Minimum long side for the paper-shape scan shortcut, per strategy.
+fn paper_min_long(strategy: OcrStrategy) -> u32 {
+    match strategy {
+        OcrStrategy::Conservative => 1500,
+        OcrStrategy::Smart => 1200,
+        OcrStrategy::Aggressive => 800,
+        OcrStrategy::Disabled => u32::MAX,
+    }
+}
+
+/// High confidence: strong text features (bimodal + high edges).
+///
+/// Paper-shaped scans are handled by the size+shape shortcut above; this
+/// covers the high-resolution fallback and the strategy thresholds for
+/// non-paper shapes.
 fn should_ocr_high_likelihood(
-    _width: u32,
-    _height: u32,
     long: u32,
     short: u32,
-    _features: &super::image_features::ImageFeatures,
     strategy: OcrStrategy,
     min_long: u32,
     min_short: u32,
 ) -> bool {
-    let ratio = short as f32 / long as f32;
-    let paper_like = (0.68..=0.80).contains(&ratio);
-
-    // Conservative: strict requirements
-    if matches!(strategy, OcrStrategy::Conservative) {
-        // Standard paper shape OR high-resolution fallback
-        let standard = paper_like && long >= 1500;
-        let high_res = short >= 1200 && long >= 1800;
-        return standard || high_res;
+    match strategy {
+        OcrStrategy::Conservative => {
+            // High-resolution fallback for non-paper shapes.
+            short >= 1200 && long >= 1800
+        }
+        OcrStrategy::Smart => long >= 1200 && short >= 600,
+        OcrStrategy::Aggressive => long >= min_long && short >= min_short,
+        OcrStrategy::Disabled => false,
     }
-
-    // Smart: medium thresholds
-    if matches!(strategy, OcrStrategy::Smart) {
-        return long >= 1200 && short >= 600;
-    }
-
-    // Aggressive: low thresholds
-    if matches!(strategy, OcrStrategy::Aggressive) {
-        return long >= min_long && short >= min_short;
-    }
-
-    false
 }
 
 /// Medium confidence: needs verification
@@ -194,20 +202,18 @@ fn should_ocr_medium_likelihood(
     min_long: u32,
     min_short: u32,
 ) -> bool {
-    // Conservative: give up
+    // Conservative gives up on anything that needs verification.
     if matches!(strategy, OcrStrategy::Conservative) {
         return false;
     }
 
-    // Smart/Aggressive: sampling verification
-    if matches!(strategy, OcrStrategy::Smart | OcrStrategy::Aggressive) {
-        if let Some(backend) = backend {
-            // Only sample if large enough
-            if long >= min_long && short >= min_short {
-                return quick_sample_ocr(asset, backend, &SamplingOcrOptions::default())
-                    .unwrap_or(false);
-            }
-        }
+    // Smart/Aggressive verify with a downsampled sample, when large enough.
+    if matches!(strategy, OcrStrategy::Smart | OcrStrategy::Aggressive)
+        && let Some(backend) = backend
+        && long >= min_long
+        && short >= min_short
+    {
+        return quick_sample_ocr(asset, backend, &SamplingOcrOptions::default()).unwrap_or(false);
     }
 
     false
@@ -242,14 +248,18 @@ fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 ///
 /// Failures degrade with a log, consistent with the crate-wide recovery
 /// policy: one bad image never fails the conversion.
+///
+/// Returns the ids of the assets whose recognized text replaced their alt,
+/// so callers can tell "turned into text" from "left as an image".
 pub(crate) fn apply_to_document(
     doc: &mut Document,
     backend: &dyn OcrBackend,
     strategy: OcrStrategy,
     options: &OcrOptions,
-) {
+) -> HashSet<AssetId> {
+    let mut consumed = HashSet::new();
     if matches!(strategy, OcrStrategy::Disabled) {
-        return;
+        return consumed;
     }
 
     walk_blocks(
@@ -259,6 +269,7 @@ pub(crate) fn apply_to_document(
         strategy,
         options,
         false,
+        &mut consumed,
     );
 
     for note in &mut doc.notes {
@@ -269,8 +280,11 @@ pub(crate) fn apply_to_document(
             strategy,
             options,
             false,
+            &mut consumed,
         );
     }
+
+    consumed
 }
 
 fn walk_blocks(
@@ -280,29 +294,46 @@ fn walk_blocks(
     strategy: OcrStrategy,
     options: &OcrOptions,
     in_table: bool,
+    consumed: &mut HashSet<AssetId>,
 ) {
     for block in blocks {
         match block {
             Block::Paragraph(inlines) => {
-                walk_inlines(inlines, assets, backend, strategy, options, in_table);
+                walk_inlines(inlines, assets, backend, strategy, options, in_table, consumed);
             }
             Block::Heading { content, .. } => {
-                walk_inlines(content, assets, backend, strategy, options, in_table);
+                walk_inlines(content, assets, backend, strategy, options, in_table, consumed);
             }
             Block::List(list) => {
                 for item in &mut list.items {
-                    walk_blocks(&mut item.blocks, assets, backend, strategy, options, in_table);
+                    walk_blocks(
+                        &mut item.blocks,
+                        assets,
+                        backend,
+                        strategy,
+                        options,
+                        in_table,
+                        consumed,
+                    );
                 }
             }
             Block::Table(table) => {
                 for slot in table.grid.iter_mut().flatten() {
                     if let CellSlot::Origin(cell) = slot {
-                        walk_blocks(&mut cell.blocks, assets, backend, strategy, options, true);
+                        walk_blocks(
+                            &mut cell.blocks,
+                            assets,
+                            backend,
+                            strategy,
+                            options,
+                            true,
+                            consumed,
+                        );
                     }
                 }
             }
             Block::BlockQuote(nested) => {
-                walk_blocks(nested, assets, backend, strategy, options, in_table);
+                walk_blocks(nested, assets, backend, strategy, options, in_table, consumed);
             }
             Block::CodeBlock { .. } | Block::Rule => {}
         }
@@ -316,6 +347,7 @@ fn walk_inlines(
     strategy: OcrStrategy,
     options: &OcrOptions,
     in_table: bool,
+    consumed: &mut HashSet<AssetId>,
 ) {
     // Detect adjacent text
     let has_adjacent_text = inlines
@@ -350,6 +382,7 @@ fn walk_inlines(
                         result.text.len()
                     );
                     *alt = result.text;
+                    consumed.insert(*id);
                 }
                 Ok(_) => {
                     log::debug!("Embedded image (asset {}) OCR'd to no text", id.0);
@@ -359,7 +392,7 @@ fn walk_inlines(
                 }
             }
         } else if let Inline::Link { content, .. } = inline {
-            walk_inlines(content, assets, backend, strategy, options, in_table);
+            walk_inlines(content, assets, backend, strategy, options, in_table, consumed);
         }
     }
 }

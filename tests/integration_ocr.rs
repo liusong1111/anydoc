@@ -138,3 +138,56 @@ fn no_prefix_means_no_image_reference() {
     assert!(!out.content.contains("!["), "got: {}", out.content);
     assert!(out.images.is_empty());
 }
+
+#[test]
+fn scanned_pdf_exports_page_images_without_ocr() {
+    // Without OCR but with image export, a scanned page becomes a page render
+    // referenced in place, so an image-only PDF still converts.
+    let out = to_output_with_ocr(
+        &fixture("scanned.pdf"),
+        Format::Pdf,
+        OutputFormat::Markdown,
+        None,
+        OcrStrategy::Disabled,
+        Some("images"),
+    )
+    .unwrap();
+    assert!(out.content.contains("![Page 1](images/page-001.png)"), "got: {}", out.content);
+    assert_eq!(out.images.len(), 1);
+    assert_eq!(out.images[0].filename, "page-001.png");
+    assert_eq!(out.images[0].media_type, "image/png");
+    assert!(out.images[0].bytes.starts_with(b"\x89PNG"));
+}
+
+#[test]
+fn mixed_pdf_exports_only_scanned_pages() {
+    let out = to_output_with_ocr(
+        &fixture("mixed.pdf"),
+        Format::Pdf,
+        OutputFormat::Markdown,
+        None,
+        OcrStrategy::Disabled,
+        Some("images"),
+    )
+    .unwrap();
+    let text_page = out.content.find("This page is real text, no OCR needed.");
+    let page_image = out.content.find("](images/page-");
+    assert!(text_page.is_some() && page_image.is_some(), "got: {}", out.content);
+    assert!(text_page < page_image, "pages out of order: {}", out.content);
+    assert_eq!(out.images.len(), 1);
+}
+
+#[test]
+fn text_pdf_exports_no_page_images() {
+    let out = to_output_with_ocr(
+        &fixture("text.pdf"),
+        Format::Pdf,
+        OutputFormat::Markdown,
+        None,
+        OcrStrategy::Disabled,
+        Some("images"),
+    )
+    .unwrap();
+    assert!(out.images.is_empty());
+    assert!(!out.content.contains("!["), "got: {}", out.content);
+}

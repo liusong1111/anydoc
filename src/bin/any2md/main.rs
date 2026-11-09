@@ -22,7 +22,8 @@ struct Cli {
     #[arg(short, long, value_name = "OUTPUT")]
     output: Option<PathBuf>,
 
-    /// Export embedded illustrations to this directory (requires -o/--output).
+    /// Export embedded illustrations to this directory (requires -o/--output);
+    /// without --ocr, PDF pages that need OCR are exported here as page images.
     #[arg(long, value_name = "DIR")]
     images_dir: Option<PathBuf>,
 

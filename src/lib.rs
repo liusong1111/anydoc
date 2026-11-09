@@ -211,7 +211,8 @@ pub struct ConversionOutput {
 /// images as alt text, exactly like [`to_output_bytes_with_ocr`]. When set,
 /// `images` holds the files to write, each named `image-N.ext`. Only large
 /// illustrations are exported — decorative elements and images that OCR turned
-/// into text are left out.
+/// into text are left out. For PDFs without an OCR backend, pages that would
+/// need OCR are exported instead as `page-NNN.png` renders.
 pub fn to_output_with_ocr(
     bytes: &[u8],
     format: impl Into<Option<Format>>,
@@ -225,15 +226,27 @@ pub fn to_output_with_ocr(
         // PDFs convert to Markdown directly (pdf-inspector) and never pass
         // through the document model, so non-Markdown outputs derive from the
         // Markdown: plain text strips markup, HTML goes through a Markdown
-        // parser. PDFs carry no document-model assets, so no image export.
-        let markdown = formats::pdf::to_markdown_with_ocr(bytes, ocr, &ocr::OcrOptions::default())?;
+        // parser. PDFs carry no document-model assets; with image export on
+        // and no OCR, pages that would need OCR are exported as page images
+        // (Markdown and HTML only), so image-only PDFs still convert.
+        let (markdown, images) = match (ocr, image_prefix) {
+            (None, Some(prefix))
+                if matches!(
+                    output_format,
+                    OutputFormat::Markdown | OutputFormat::Html | OutputFormat::HtmlDocument
+                ) =>
+            {
+                formats::pdf::to_markdown_with_page_images(bytes, prefix)?
+            }
+            _ => (formats::pdf::to_markdown_with_ocr(bytes, ocr, &ocr::OcrOptions::default())?, Vec::new()),
+        };
         let content = match output_format {
             OutputFormat::Markdown => markdown,
             OutputFormat::PlainText => markdown_to_plaintext_fallback(&markdown),
             OutputFormat::Html => markdown_to_html(&markdown),
             OutputFormat::HtmlDocument => wrap_html_document(&markdown_to_html(&markdown)),
         };
-        return Ok(ConversionOutput { content, images: Vec::new() });
+        return Ok(ConversionOutput { content, images });
     }
     let mut document = to_document(bytes, format)?;
     let ocr_consumed = match ocr {

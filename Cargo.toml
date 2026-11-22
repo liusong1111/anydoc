@@ -5,7 +5,7 @@ exclude = ["fuzz"]
 
 [package]
 name = "anydoc"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 # Edition 2024 needs 1.85; zip raises it to 1.88.
 rust-version = "1.88"
@@ -46,7 +46,7 @@ encoding_rs = "0.8.35"
 log = "0.4"
 pdf-inspector = "1.14.2"
 quick-xml = "0.41.0"
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.5.1", default-features = false, features = ["deflate"] }
 # OCR（any2md 新增）：PP-OCRv5 模型 + MNN 推理，进程内嵌入式
 # ocr-rs 即 rust-paddle-ocr 的 crates.io 发布名（2.x 系列，vendored MNN）
 ocr-rs = "2.4"

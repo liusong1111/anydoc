@@ -42,7 +42,9 @@ inner_image_name := "registry-vpc.cn-shanghai.aliyuncs.com/maim1/any2md"
 default: build
 
 # 构建 Linux musl 静态 release 二进制，连同模型一起组装到 dist/any2md/
-# RUSTFLAGS 说明（用 target 级变量，避免影响 host 侧 build script 链接）：
+# RUSTFLAGS 说明（用 RUSTFLAGS 而不是 CARGO_TARGET_*_RUSTFLAGS：带 --target 时 RUSTFLAGS 只作用于目标产物、
+#   不影响 host 侧 build script；且它整体取代各处 config.toml 的 rustflags，不与之合并——宿主机全局
+#   ~/.cargo/config.toml 的 musl 段带 -fuse-ld=mold，musl 的 g++ 不认，合并进来会链接失败）：
 #   - --start-group 包住 shim 和 -lc：shim（musl_fortify_shim）引用 libc 符号，
 #     直接 -l 排在 -lc 后面会解析失败，group 让 ld 重扫
 #   - -L target/musl-static：ocr-rs 在 Linux 上总是按动态链接声明 -lstdc++
@@ -56,7 +58,7 @@ build:
     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-g++ && \
     export CC_x86_64_unknown_linux_musl=x86_64-linux-musl-gcc && \
     export CXX_x86_64_unknown_linux_musl=x86_64-linux-musl-g++ && \
-    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C link-arg=-L{{justfile_directory()}}/target/musl-static -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc -C link-arg=-Wl,--start-group -C link-arg=-lmusl_fortify_shim -C link-arg=-lc -C link-arg=-Wl,--end-group" && \
+    export RUSTFLAGS="-C link-arg=-L{{justfile_directory()}}/target/musl-static -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc -C link-arg=-Wl,--start-group -C link-arg=-lmusl_fortify_shim -C link-arg=-lc -C link-arg=-Wl,--end-group" && \
     cargo build --release --target {{musl_target}} --bin any2md
     mkdir -p {{out}}/any2md
     cp target/{{musl_target}}/release/any2md {{out}}/any2md/
